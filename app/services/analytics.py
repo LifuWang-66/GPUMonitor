@@ -58,15 +58,14 @@ def get_gpu_history(db: Session, allowed_hosts: list[str], days: int) -> list[Gp
 
     results: list[GpuSummaryResponse] = []
     for entries in grouped.values():
-        daily_entries = entries
-        first_daily, host = daily_entries[0]
-        samples = sum(item.samples for item, _ in daily_entries)
-        busy_samples = sum(item.busy_samples for item, _ in daily_entries)
-        non_idle_samples = sum(item.non_idle_samples for item, _ in daily_entries)
-        total_util = sum(item.total_utilization for item, _ in daily_entries)
-        total_memory = sum(item.total_memory_used_mb for item, _ in daily_entries)
+        first_daily, host = entries[0]
+        samples = sum((item.samples or 0) for item, _ in entries)
+        busy_samples = sum((item.busy_samples or 0) for item, _ in entries)
+        non_idle_samples = sum((item.non_idle_samples or 0) for item, _ in entries)
+        total_util = sum((item.total_utilization or 0) for item, _ in entries)
+        total_memory = sum((item.total_memory_used_mb or 0) for item, _ in entries)
         trend = []
-        for item, _ in daily_entries:
+        for item, _ in entries:
             sample_count = item.samples or 1
             trend.append(
                 TrendPoint(
