@@ -69,6 +69,8 @@ COLLECTOR_SSH_PASSWORD=<对应密码，或者留空改用 SSH key>
 # COLLECTOR_SSH_KEY_PATH=/absolute/path/to/id_ed25519
 ```
 
+如果你准备使用密码采集，那么 `COLLECTOR_SSH_KEY_PATH` 保持空白即可；当前版本会把空字符串自动当成未配置处理，不会再把空路径传给 SSH 客户端。
+
 启动应用：
 
 ```bash

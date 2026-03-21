@@ -71,6 +71,18 @@ class RemoteCollectorError(RuntimeError):
 def _connect(host: str, credentials: SshCredentials) -> paramiko.SSHClient:
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    connection_kwargs = {
+        'hostname': host,
+        'port': settings.collector_ssh_port,
+        'username': credentials.username,
+        'password': credentials.password,
+        'allow_agent': credentials.use_agent,
+        'look_for_keys': credentials.use_agent,
+        'timeout': settings.ssh_connect_timeout_seconds,
+    }
+    if credentials.key_path:
+        connection_kwargs['key_filename'] = credentials.key_path
+    client.connect(**connection_kwargs)
     client.connect(
         hostname=host,
         port=settings.collector_ssh_port,
