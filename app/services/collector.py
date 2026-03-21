@@ -12,14 +12,6 @@ from app.services.ssh_client import HostSnapshot, SshCredentials, collect_host_s
 settings = get_settings()
 
 
-def _int_or_zero(value: int | None) -> int:
-    return int(value or 0)
-
-
-def _float_or_zero(value: float | None) -> float:
-    return float(value or 0.0)
-
-
 def ensure_hosts(db: Session) -> list[Host]:
     existing = {host.address: host for host in db.scalars(select(Host)).all()}
     hosts: list[Host] = []
@@ -96,11 +88,9 @@ def upsert_snapshot(db: Session, host: Host, snapshot: HostSnapshot) -> None:
             daily_gpu = DailyGpuAggregate(host_id=host.id, gpu_index=record.gpu_index, gpu_name=record.gpu_name, date=sample_date)
             db.add(daily_gpu)
         daily_gpu.gpu_name = record.gpu_name
-        daily_gpu.samples = _int_or_zero(daily_gpu.samples) + 1
-        daily_gpu.total_utilization = _float_or_zero(daily_gpu.total_utilization) + record.utilization_gpu
-        daily_gpu.total_memory_used_mb = _float_or_zero(daily_gpu.total_memory_used_mb) + record.memory_used_mb
-        daily_gpu.busy_samples = _int_or_zero(daily_gpu.busy_samples)
-        daily_gpu.non_idle_samples = _int_or_zero(daily_gpu.non_idle_samples)
+        daily_gpu.samples += 1
+        daily_gpu.total_utilization += record.utilization_gpu
+        daily_gpu.total_memory_used_mb += record.memory_used_mb
         if record.process_count > 0:
             daily_gpu.busy_samples += 1
         if not is_idle:
@@ -119,9 +109,8 @@ def upsert_snapshot(db: Session, host: Host, snapshot: HostSnapshot) -> None:
             if daily_user is None:
                 daily_user = DailyUserAggregate(host_id=host.id, username=username, date=sample_date)
                 db.add(daily_user)
-            daily_user.gpu_samples = _int_or_zero(daily_user.gpu_samples) + 1
-            daily_user.total_utilization = _float_or_zero(daily_user.total_utilization) + record.utilization_gpu
-            daily_user.non_idle_samples = _int_or_zero(daily_user.non_idle_samples)
+            daily_user.gpu_samples += 1
+            daily_user.total_utilization += record.utilization_gpu
             if not is_idle:
                 daily_user.non_idle_samples += 1
 
