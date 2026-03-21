@@ -46,24 +46,68 @@ function renderCurrent(cards) {
     currentGrid.classList.add('empty-state');
     return;
   }
+
   currentGrid.classList.remove('empty-state');
   renderSummary(cards);
-  const template = document.getElementById('gpu-card-template');
+
+  const gpuTemplate = document.getElementById('gpu-card-template');
+  const serverTemplate = document.getElementById('server-group-template');
+
+  const grouped = new Map();
   for (const card of cards) {
-    const node = template.content.cloneNode(true);
-    node.querySelector('h3').textContent = `${card.host_name} · GPU ${card.gpu_index}`;
-    node.querySelector('.muted').textContent = `${card.gpu_name} · ${card.host_address}`;
-    const badge = node.querySelector('.badge');
-    badge.textContent = card.process_count > 0 ? '占用中' : '无进程';
-    badge.classList.add(card.is_idle ? 'idle' : 'busy');
-    const metrics = node.querySelector('.metrics');
-    metrics.appendChild(metricRow('GPU util', `${card.utilization_gpu.toFixed(1)}%`, card.utilization_gpu));
-    const memoryPercent = card.memory_total_mb ? (card.memory_used_mb / card.memory_total_mb) * 100 : 0;
-    metrics.appendChild(metricRow('显存', `${card.memory_used_mb.toFixed(0)} / ${card.memory_total_mb.toFixed(0)} MB`, memoryPercent));
-    metrics.appendChild(metricRow('活动用户', card.active_users.length ? card.active_users.join(', ') : '无人'));
-    metrics.appendChild(metricRow('进程数', String(card.process_count)));
-    metrics.appendChild(metricRow('更新时间', new Date(card.last_seen_at).toLocaleString('zh-CN')));
-    currentGrid.appendChild(node);
+    const key = `${card.host_name}|||${card.host_address}`;
+    if (!grouped.has(key)) {
+      grouped.set(key, []);
+    }
+    grouped.get(key).push(card);
+  }
+
+  for (const [key, serverCards] of grouped.entries()) {
+    const [hostName, hostAddress] = key.split('|||');
+    const serverNode = serverTemplate.content.cloneNode(true);
+
+    serverNode.querySelector('.server-group-title').textContent = hostName;
+    serverNode.querySelector('.server-group-subtitle').textContent = hostAddress;
+
+    const serverGrid = serverNode.querySelector('.server-group-grid');
+
+    serverCards.sort((a, b) => a.gpu_index - b.gpu_index);
+
+    for (const card of serverCards) {
+      const node = gpuTemplate.content.cloneNode(true);
+      node.querySelector('h3').textContent = `GPU ${card.gpu_index}`;
+      node.querySelector('.muted').textContent = card.gpu_name;
+
+      const badge = node.querySelector('.badge');
+      badge.textContent = card.process_count > 0 ? '占用中' : '无进程';
+      badge.classList.add(card.is_idle ? 'idle' : 'busy');
+
+      const metrics = node.querySelector('.metrics');
+      metrics.appendChild(metricRow('GPU util', `${card.utilization_gpu.toFixed(1)}%`, card.utilization_gpu));
+
+      const memoryPercent = card.memory_total_mb
+        ? (card.memory_used_mb / card.memory_total_mb) * 100
+        : 0;
+      metrics.appendChild(
+        metricRow(
+          '显存',
+          `${card.memory_used_mb.toFixed(0)} / ${card.memory_total_mb.toFixed(0)} MB`,
+          memoryPercent
+        )
+      );
+
+      metrics.appendChild(
+        metricRow('活动用户', card.active_users.length ? card.active_users.join(', ') : '无人')
+      );
+      metrics.appendChild(metricRow('进程数', String(card.process_count)));
+      metrics.appendChild(
+        metricRow('更新时间', new Date(card.last_seen_at).toLocaleString('zh-CN'))
+      );
+
+      serverGrid.appendChild(node);
+    }
+
+    currentGrid.appendChild(serverNode);
   }
 }
 
@@ -74,29 +118,62 @@ function renderGpuHistory(items) {
     gpuHistoryGrid.classList.add('empty-state');
     return;
   }
+
   gpuHistoryGrid.classList.remove('empty-state');
+
+  const serverTemplate = document.getElementById('server-group-template');
+  if (!serverTemplate) {
+    gpuHistoryGrid.textContent = '页面模板缺失，请刷新页面或重启服务。';
+    gpuHistoryGrid.classList.add('empty-state');
+    return;
+  }
+
+  const grouped = new Map();
   for (const item of items) {
-    const card = document.createElement('article');
-    card.className = 'history-card';
-    card.innerHTML = `
-      <h3>${item.host_name} · GPU ${item.gpu_index}</h3>
-      <p class="muted">${item.gpu_name} · ${item.host_address}</p>
-      <ul>
-        <li><span>占用率</span><strong>${item.occupancy_rate}%</strong></li>
-        <li><span>有效利用率</span><strong>${item.effective_utilization_rate}%</strong></li>
-        <li><span>平均 GPU util</span><strong>${item.average_gpu_utilization}%</strong></li>
-        <li><span>平均显存</span><strong>${item.average_memory_used_mb} MB</strong></li>
-      </ul>
-      <div class="sparkline"></div>
-    `;
-    const sparkline = card.querySelector('.sparkline');
-    for (const point of item.trend) {
-      const bar = document.createElement('span');
-      bar.title = `${point.label}: ${point.average_gpu_utilization}%`;
-      bar.style.height = `${Math.max(point.average_gpu_utilization, 8)}%`;
-      sparkline.appendChild(bar);
+    const key = `${item.host_name}|||${item.host_address}`;
+    if (!grouped.has(key)) {
+      grouped.set(key, []);
     }
-    gpuHistoryGrid.appendChild(card);
+    grouped.get(key).push(item);
+  }
+
+  for (const [key, serverItems] of grouped.entries()) {
+    const [hostName, hostAddress] = key.split('|||');
+    const serverNode = serverTemplate.content.cloneNode(true);
+
+    serverNode.querySelector('.server-group-title').textContent = hostName;
+    serverNode.querySelector('.server-group-subtitle').textContent = hostAddress;
+
+    const serverGrid = serverNode.querySelector('.server-group-grid');
+    serverItems.sort((a, b) => a.gpu_index - b.gpu_index);
+
+    for (const item of serverItems) {
+      const card = document.createElement('article');
+      card.className = 'history-card';
+      card.innerHTML = `
+        <h3>GPU ${item.gpu_index}</h3>
+        <p class="muted">${item.gpu_name}</p>
+        <ul>
+          <li><span>占用率</span><strong>${item.occupancy_rate}%</strong></li>
+          <li><span>有效利用率</span><strong>${item.effective_utilization_rate}%</strong></li>
+          <li><span>平均 GPU util</span><strong>${item.average_gpu_utilization}%</strong></li>
+          <li><span>平均显存</span><strong>${item.average_memory_used_mb} MB</strong></li>
+        </ul>
+        <div class="sparkline"></div>
+      `;
+
+      const sparkline = card.querySelector('.sparkline');
+      for (const point of item.trend) {
+        const bar = document.createElement('span');
+        bar.title = `${point.label}: ${point.average_gpu_utilization}%`;
+        bar.style.height = `${Math.max(point.average_gpu_utilization, 8)}%`;
+        sparkline.appendChild(bar);
+      }
+
+      serverGrid.appendChild(card);
+    }
+
+    gpuHistoryGrid.appendChild(serverNode);
   }
 }
 

@@ -59,6 +59,9 @@ def upsert_snapshot(db: Session, host: Host, snapshot: HostSnapshot) -> None:
     sample_date = snapshot.collected_at.date()
     collected_at = snapshot.collected_at.replace(tzinfo=None)
 
+    daily_gpu_cache: dict[tuple[int, int], DailyGpuAggregate] = {}
+    daily_user_cache: dict[tuple[int, str], DailyUserAggregate] = {}
+
     for record in snapshot.gpu_records:
         is_idle = record.utilization_gpu < 10.0
 
@@ -88,26 +91,30 @@ def upsert_snapshot(db: Session, host: Host, snapshot: HostSnapshot) -> None:
         current.is_idle = is_idle
         current.last_seen_at = collected_at
 
-        daily_gpu = db.scalar(
-            select(DailyGpuAggregate).where(
-                DailyGpuAggregate.host_id == host.id,
-                DailyGpuAggregate.gpu_index == record.gpu_index,
-                DailyGpuAggregate.date == sample_date,
-            )
-        )
+        gpu_key = (host.id, record.gpu_index)
+        daily_gpu = daily_gpu_cache.get(gpu_key)
         if daily_gpu is None:
-            daily_gpu = DailyGpuAggregate(
-                host_id=host.id,
-                gpu_index=record.gpu_index,
-                gpu_name=record.gpu_name,
-                date=sample_date,
-                samples=0,
-                total_utilization=0.0,
-                total_memory_used_mb=0.0,
-                busy_samples=0,
-                non_idle_samples=0,
+            daily_gpu = db.scalar(
+                select(DailyGpuAggregate).where(
+                    DailyGpuAggregate.host_id == host.id,
+                    DailyGpuAggregate.gpu_index == record.gpu_index,
+                    DailyGpuAggregate.date == sample_date,
+                )
             )
-            db.add(daily_gpu)
+            if daily_gpu is None:
+                daily_gpu = DailyGpuAggregate(
+                    host_id=host.id,
+                    gpu_index=record.gpu_index,
+                    gpu_name=record.gpu_name,
+                    date=sample_date,
+                    samples=0,
+                    total_utilization=0.0,
+                    total_memory_used_mb=0.0,
+                    busy_samples=0,
+                    non_idle_samples=0,
+                )
+                db.add(daily_gpu)
+            daily_gpu_cache[gpu_key] = daily_gpu
 
         daily_gpu.gpu_name = record.gpu_name
         daily_gpu.samples = (daily_gpu.samples or 0) + 1
@@ -122,23 +129,27 @@ def upsert_snapshot(db: Session, host: Host, snapshot: HostSnapshot) -> None:
             if username in settings.excluded_users:
                 continue
 
-            daily_user = db.scalar(
-                select(DailyUserAggregate).where(
-                    DailyUserAggregate.host_id == host.id,
-                    DailyUserAggregate.username == username,
-                    DailyUserAggregate.date == sample_date,
-                )
-            )
+            user_key = (host.id, username)
+            daily_user = daily_user_cache.get(user_key)
             if daily_user is None:
-                daily_user = DailyUserAggregate(
-                    host_id=host.id,
-                    username=username,
-                    date=sample_date,
-                    gpu_samples=0,
-                    total_utilization=0.0,
-                    non_idle_samples=0,
+                daily_user = db.scalar(
+                    select(DailyUserAggregate).where(
+                        DailyUserAggregate.host_id == host.id,
+                        DailyUserAggregate.username == username,
+                        DailyUserAggregate.date == sample_date,
+                    )
                 )
-                db.add(daily_user)
+                if daily_user is None:
+                    daily_user = DailyUserAggregate(
+                        host_id=host.id,
+                        username=username,
+                        date=sample_date,
+                        gpu_samples=0,
+                        total_utilization=0.0,
+                        non_idle_samples=0,
+                    )
+                    db.add(daily_user)
+                daily_user_cache[user_key] = daily_user
 
             daily_user.gpu_samples = (daily_user.gpu_samples or 0) + 1
             daily_user.total_utilization = (daily_user.total_utilization or 0.0) + record.utilization_gpu

@@ -56,7 +56,7 @@
           <button id="refresh-button" class="secondary">刷新数据</button>
         </div>
         <div id="status-summary" class="stat-grid"></div>
-        <div id="current-gpu-grid" class="card-grid empty-state">请先完成连接验证。</div>
+        <div id="current-gpu-grid" class="server-groups empty-state">请先完成连接验证。</div>
       </section>
 
       <section class="panel history-panel">
@@ -73,7 +73,7 @@
             </label>
           </div>
         </div>
-        <div id="gpu-history-grid" class="card-grid empty-state">连接后将自动加载近 7/14/20/30 天 GPU 利用率统计。</div>
+        <div id="gpu-history-grid" class="server-groups empty-state">连接后将自动加载近 7/14/20/30 天 GPU 利用率统计。</div>
       </section>
 
       <section class="panel users-panel">
@@ -83,6 +83,18 @@
         <div id="user-table-wrapper" class="empty-state">连接后将显示你有权限查看的用户聚合数据。</div>
       </section>
     </main>
+
+    <template id="server-group-template">
+      <section class="server-group">
+        <div class="server-group-header">
+          <div>
+            <h3 class="server-group-title"></h3>
+            <p class="muted server-group-subtitle"></p>
+          </div>
+        </div>
+        <div class="card-grid server-group-grid"></div>
+      </section>
+    </template>
 
     <template id="gpu-card-template">
       <article class="gpu-card">

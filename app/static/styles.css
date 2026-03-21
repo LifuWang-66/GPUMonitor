@@ -163,3 +163,33 @@ button.secondary {
   .page-header { flex-direction: column; }
   #access-form { grid-template-columns: 1fr; }
 }
+
+.server-groups {
+  display: grid;
+  gap: 16px;
+}
+
+.server-group {
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 16px;
+  background: rgba(20, 36, 58, 0.35);
+}
+
+.server-group-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.server-group-title {
+  margin: 0;
+  font-size: 18px;
+}
+
+.server-group-subtitle {
+  margin: 4px 0 0;
+}
