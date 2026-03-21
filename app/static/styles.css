@@ -19,7 +19,7 @@ body {
   color: var(--text);
 }
 .page-header, .layout {
-  width: min(1320px, calc(100vw - 32px));
+  width: min(1280px, calc(100vw - 32px));
   margin: 0 auto;
 }
 .page-header {
@@ -31,8 +31,7 @@ body {
 }
 .eyebrow { text-transform: uppercase; letter-spacing: .18em; color: var(--accent); font-size: 12px; margin-bottom: 8px; }
 h1 { margin: 0 0 8px; font-size: 36px; }
-.subtle, .muted, .table-subtext { color: var(--muted); }
-.section-note { margin: 4px 0 0; }
+.subtle, .muted { color: var(--muted); }
 .layout {
   display: grid;
   gap: 18px;
@@ -75,9 +74,9 @@ button.secondary {
   color: var(--text);
 }
 .checkbox-row { grid-template-columns: auto 1fr; align-items: center; }
-.host-tags, .stat-grid { display: grid; gap: 12px; }
+.host-tags, .stat-grid, .card-grid { display: grid; gap: 12px; }
 .host-tags { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
-.host-tags span, .stat-tile, .gpu-card, .history-card, .server-section {
+.host-tags span, .stat-tile, .gpu-card, .history-card {
   background: var(--panel-alt);
   border: 1px solid var(--border);
   border-radius: 16px;
@@ -85,23 +84,8 @@ button.secondary {
 }
 .stat-grid { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); margin-bottom: 16px; }
 .stat-tile strong { display: block; font-size: 28px; margin-top: 10px; }
-.server-stack {
-  display: grid;
-  gap: 14px;
-}
-.server-section-head, .section-title-row, .session-card {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: center;
-}
-.server-card-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 12px;
-  margin-top: 12px;
-}
-.gpu-card-head {
+.card-grid { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.gpu-card-head, .section-title-row, .session-card {
   display: flex;
   justify-content: space-between;
   gap: 12px;
@@ -169,7 +153,6 @@ button.secondary {
   padding: 12px 10px;
   border-bottom: 1px solid var(--border);
   text-align: left;
-  vertical-align: top;
 }
 .empty-state {
   color: var(--muted);
@@ -177,14 +160,6 @@ button.secondary {
   align-items: center;
 }
 @media (max-width: 768px) {
-  .page-header,
-  .section-title-row,
-  .server-section-head {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-  #access-form,
-  .server-card-grid {
-    grid-template-columns: 1fr;
-  }
+  .page-header { flex-direction: column; }
+  #access-form { grid-template-columns: 1fr; }
 }
