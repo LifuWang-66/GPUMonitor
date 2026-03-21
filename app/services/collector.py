@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -10,33 +10,6 @@ from app.models import CurrentGpuStatus, DailyGpuAggregate, DailyUserAggregate, 
 from app.services.ssh_client import HostSnapshot, SshCredentials, collect_host_snapshot
 
 settings = get_settings()
-
-
-def _int_or_zero(value: int | None) -> int:
-    return int(value or 0)
-
-
-def _float_or_zero(value: float | None) -> float:
-    return float(value or 0.0)
-
-
-def repair_null_aggregates(db: Session) -> None:
-    db.execute(
-        update(DailyGpuAggregate).values(
-            samples=func.coalesce(DailyGpuAggregate.samples, 0),
-            busy_samples=func.coalesce(DailyGpuAggregate.busy_samples, 0),
-            non_idle_samples=func.coalesce(DailyGpuAggregate.non_idle_samples, 0),
-            total_utilization=func.coalesce(DailyGpuAggregate.total_utilization, 0),
-            total_memory_used_mb=func.coalesce(DailyGpuAggregate.total_memory_used_mb, 0),
-        )
-    )
-    db.execute(
-        update(DailyUserAggregate).values(
-            gpu_samples=func.coalesce(DailyUserAggregate.gpu_samples, 0),
-            non_idle_samples=func.coalesce(DailyUserAggregate.non_idle_samples, 0),
-            total_utilization=func.coalesce(DailyUserAggregate.total_utilization, 0),
-        )
-    )
 
 
 def ensure_hosts(db: Session) -> list[Host]:
@@ -59,9 +32,6 @@ def ensure_hosts(db: Session) -> list[Host]:
 def run_collection(db: Session) -> list[str]:
     if not settings.collector_ssh_username:
         return ['Collector skipped: missing COLLECTOR_SSH_USERNAME configuration.']
-
-    repair_null_aggregates(db)
-    db.commit()
 
     credentials = SshCredentials(
         username=settings.collector_ssh_username,
@@ -118,15 +88,13 @@ def upsert_snapshot(db: Session, host: Host, snapshot: HostSnapshot) -> None:
             daily_gpu = DailyGpuAggregate(host_id=host.id, gpu_index=record.gpu_index, gpu_name=record.gpu_name, date=sample_date)
             db.add(daily_gpu)
         daily_gpu.gpu_name = record.gpu_name
-        daily_gpu.samples = _int_or_zero(daily_gpu.samples) + 1
-        daily_gpu.total_utilization = _float_or_zero(daily_gpu.total_utilization) + record.utilization_gpu
-        daily_gpu.total_memory_used_mb = _float_or_zero(daily_gpu.total_memory_used_mb) + record.memory_used_mb
-        daily_gpu.busy_samples = _int_or_zero(daily_gpu.busy_samples)
-        daily_gpu.non_idle_samples = _int_or_zero(daily_gpu.non_idle_samples)
+        daily_gpu.samples += 1
+        daily_gpu.total_utilization += record.utilization_gpu
+        daily_gpu.total_memory_used_mb += record.memory_used_mb
         if record.process_count > 0:
-            daily_gpu.busy_samples = _int_or_zero(daily_gpu.busy_samples) + 1
+            daily_gpu.busy_samples += 1
         if not is_idle:
-            daily_gpu.non_idle_samples = _int_or_zero(daily_gpu.non_idle_samples) + 1
+            daily_gpu.non_idle_samples += 1
 
         for username in record.active_users:
             if username in settings.excluded_users:
@@ -141,11 +109,10 @@ def upsert_snapshot(db: Session, host: Host, snapshot: HostSnapshot) -> None:
             if daily_user is None:
                 daily_user = DailyUserAggregate(host_id=host.id, username=username, date=sample_date)
                 db.add(daily_user)
-            daily_user.gpu_samples = _int_or_zero(daily_user.gpu_samples) + 1
-            daily_user.total_utilization = _float_or_zero(daily_user.total_utilization) + record.utilization_gpu
-            daily_user.non_idle_samples = _int_or_zero(daily_user.non_idle_samples)
+            daily_user.gpu_samples += 1
+            daily_user.total_utilization += record.utilization_gpu
             if not is_idle:
-                daily_user.non_idle_samples = _int_or_zero(daily_user.non_idle_samples) + 1
+                daily_user.non_idle_samples += 1
 
 
 def cleanup_old_data(db: Session) -> None:
