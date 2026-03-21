@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     environment: str = 'development'
     secret_key: str = 'change-me'
     database_url: str = 'sqlite:///./gpu_monitor.db'
-    cohttps://github.com/LifuWang-66/GPUMonitor/pull/2/conflict?name=app%252Fservices%252Fssh_client.py&base_oid=09ed936fc7c70b20ea2adbf203bd7b854aa16296&head_oid=f7dd19f3c14c904ac92271170ec93a2eae724962llector_interval_minutes: int = 10
+    collector_interval_minutes: int = 10
     retention_days: int = 60
     monitor_hosts: str = '10.193.104.165,10.193.104.170,10.193.104.181,10.193.104.182,10.193.104.186'
     monitor_host_aliases: str = 'PZU-104-165,PZU-104-170,PZU-104-181,PZU-104-182,PZU-104-186'
