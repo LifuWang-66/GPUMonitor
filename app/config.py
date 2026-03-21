@@ -2,6 +2,7 @@ from functools import lru_cache
 from typing import List
 
 from pydantic import Field, field_validator
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,9 +31,7 @@ class Settings(BaseSettings):
         if value is None:
             return None
         normalized = value.strip()
-        if not normalized or normalized.lower() in {'none', 'null', 'nil'}:
-            return None
-        return normalized
+        return normalized or None
 
     @property
     def hosts(self) -> list[dict[str, str]]:
