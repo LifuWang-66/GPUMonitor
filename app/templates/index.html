@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{ app_name }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}" />
+  </head>
+  <body>
+    <header class="page-header">
+      <div>
+        <p class="eyebrow">GPU Monitor</p>
+        <h1>{{ app_name }}</h1>
+        <p class="subtle">10 分钟采样、60 天聚合保留，只展示当前用户有权限访问的服务器。</p>
+      </div>
+      <div class="header-actions">
+        {% if session_username %}
+        <div class="session-card">
+          <span>当前用户：{{ session_username }}</span>
+          <span>可访问服务器：{{ accessible_hosts | length }}</span>
+          <button id="logout-button" class="secondary">退出</button>
+        </div>
+        {% endif %}
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel auth-panel">
+        <h2>连接验证</h2>
+        <p>输入你自己的 Linux 账号。系统会尝试 SSH 到 5 台 GPU 服务器，验证你能访问哪些机器，然后只展示那些机器的统计数据。</p>
+        <form id="access-form" method="post" action="/session/access">
+          <label>
+            用户名
+            <input name="username" required placeholder="例如 jinyang" value="{{ session_username or '' }}" />
+          </label>
+          <label>
+            密码
+            <input name="password" type="password" placeholder="如已配置 SSH key 可留空" />
+          </label>
+          <label class="checkbox-row">
+            <input name="use_agent" type="checkbox" value="true" />
+            优先使用部署机上的 SSH key / agent
+          </label>
+          <button type="submit">验证并进入面板</button>
+        </form>
+        <div class="host-tags">
+          {% for host in host_aliases %}
+          <span>{{ host.name }} · {{ host.address }}</span>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section class="panel overview-panel">
+        <div class="section-title-row">
+          <h2>状态层</h2>
+          <button id="refresh-button" class="secondary">刷新数据</button>
+        </div>
+        <div id="status-summary" class="stat-grid"></div>
+        <div id="current-gpu-grid" class="card-grid empty-state">请先完成连接验证。</div>
+      </section>
+
+      <section class="panel history-panel">
+        <div class="section-title-row">
+          <h2>历史统计层</h2>
+          <div>
+            <label>
+              时间范围
+              <select id="window-select">
+                {% for window in history_windows %}
+                <option value="{{ window }}" {% if window == 30 %}selected{% endif %}>{{ window }} 天</option>
+                {% endfor %}
+              </select>
+            </label>
+          </div>
+        </div>
+        <div id="gpu-history-grid" class="card-grid empty-state">连接后将自动加载近 7/14/20/30 天 GPU 利用率统计。</div>
+      </section>
+
+      <section class="panel users-panel">
+        <div class="section-title-row">
+          <h2>各个用户的 GPU 使用时间</h2>
+        </div>
+        <div id="user-table-wrapper" class="empty-state">连接后将显示你有权限查看的用户聚合数据。</div>
+      </section>
+    </main>
+
+    <template id="gpu-card-template">
+      <article class="gpu-card">
+        <div class="gpu-card-head">
+          <div>
+            <h3></h3>
+            <p class="muted"></p>
+          </div>
+          <span class="badge"></span>
+        </div>
+        <div class="metrics"></div>
+      </article>
+    </template>
+
+    <script>
+      window.GPU_MONITOR_BOOTSTRAP = {
+        sessionUsername: {{ (session_username or '') | tojson }},
+        accessibleHosts: {{ accessible_hosts | tojson }},
+      };
+    </script>
+    <script src="{{ url_for('static', path='/app.js') }}"></script>
+  </body>
+</html>
