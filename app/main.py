@@ -15,9 +15,10 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.config import get_settings
 from app.db import Base, SessionLocal, engine, get_db
 from app.models import UserProfile
-from app.schemas import CredentialCheckRequest, HostAccessResult, SessionResponse
+from app.schemas import CredentialCheckRequest, HostAccessResult, SessionResponse, TestEmailRequest, TestEmailResponse
 from app.services.analytics import get_current_status, get_gpu_history, get_user_history
 from app.services.collector import collect_live_current_status, ensure_hosts, run_collection
+from app.services.notifications import send_email
 from app.services.ssh_client import SshCredentials, validate_host_access
 
 settings = get_settings()
@@ -170,3 +171,33 @@ def api_user_history(request: Request, days: int = 30, allowed_hosts: list[str] 
 @app.post('/api/collector/run')
 def api_run_collector(db: Session = Depends(get_db)):
     return {'messages': run_collection(db)}
+
+
+@app.post('/api/notifications/test-email', response_model=TestEmailResponse)
+def api_test_email(payload: TestEmailRequest, request: Request, db: Session = Depends(get_db)):
+    viewer = (request.session.get('username') or '').strip()
+    if not viewer:
+        raise HTTPException(status_code=401, detail='Please login first.')
+
+    session_email = (request.session.get('email') or '').strip()
+    target_email = (payload.to_email or session_email).strip()
+    if not target_email:
+        raise HTTPException(status_code=400, detail='Target email is required.')
+
+    cc_email: str | None = None
+    if payload.cc_lifu:
+        lifu_profile = db.scalar(select(UserProfile).where(UserProfile.username == 'lifu'))
+        if lifu_profile and (lifu_profile.email or '').strip():
+            cc_email = lifu_profile.email.strip()
+
+    subject = payload.subject or f'[TEST] {settings.app_name} notification check'
+    body = payload.body or (
+        f'Hello {viewer},\n\n'
+        'This is a test email from GPU Monitor.\n'
+        'If you received this, SMTP settings are working.\n'
+    )
+
+    success = send_email(target_email, subject, body, cc_email=cc_email)
+    if not success:
+        raise HTTPException(status_code=500, detail='Failed to send test email. Check SMTP settings.')
+    return TestEmailResponse(success=True, to_email=target_email, cc_email=cc_email, detail='Test email sent.')

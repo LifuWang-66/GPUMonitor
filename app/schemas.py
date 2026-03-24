@@ -22,6 +22,20 @@ class SessionResponse(BaseModel):
     accessible_hosts: list[str]
 
 
+class TestEmailRequest(BaseModel):
+    to_email: str | None = None
+    subject: str | None = None
+    body: str | None = None
+    cc_lifu: bool = True
+
+
+class TestEmailResponse(BaseModel):
+    success: bool
+    to_email: str
+    cc_email: str | None = None
+    detail: str
+
+
 class CurrentGpuResponse(BaseModel):
     host_name: str
     host_address: str
