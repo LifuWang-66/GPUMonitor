@@ -38,16 +38,38 @@ function mbToGb(mb) {
   return (mb / 1024).toFixed(1);
 }
 
+function normalizeGpuModel(name) {
+  const raw = (name || '').trim();
+  const upper = raw.toUpperCase();
+  if (upper.includes('RTX PRO 6000')) {
+    return 'NVIDIA RTX Pro 6000';
+  }
+  if (upper.includes('L40S')) {
+    return 'NVIDIA L40S';
+  }
+  return raw || '未知型号';
+}
+
+function officialMemoryByModel(model) {
+  const upper = model.toUpperCase();
+  if (upper.includes('RTX PRO 6000')) return 96;
+  if (upper.includes('L40S')) return 48;
+  return null;
+}
+
 function getHostSummary(cards) {
   const totalCards = cards.length;
   const hasProcessCount = cards.some(card => typeof card.process_count === 'number');
   const busyCards = hasProcessCount
     ? cards.filter(card => (card.process_count || 0) > 0).length
     : cards.filter(card => (card.occupancy_rate || 0) > 0).length;
-  const models = [...new Set(cards.map(card => card.gpu_name))];
+  const models = [...new Set(cards.map(card => normalizeGpuModel(card.gpu_name)))];
   const modelLabel = models.length === 1 ? models[0] : `Mixed (${models.length})`;
+  const officialMemory = models.length === 1 ? officialMemoryByModel(modelLabel) : null;
   const memoryTotals = [...new Set(cards.map(card => card.memory_total_mb))].filter(Boolean);
-  const memoryLabel = memoryTotals.length === 1 ? `${mbToGb(memoryTotals[0])} GB/卡` : '多规格';
+  const memoryLabel = officialMemory
+    ? `${officialMemory} GB/卡`
+    : (memoryTotals.length === 1 ? `${mbToGb(memoryTotals[0])} GB/卡` : '多规格');
   return { totalCards, busyCards, modelLabel, memoryLabel };
 }
 
@@ -180,11 +202,14 @@ function renderGpuHistory(items) {
     const section = createServerSection(group.hostName, group.hostAddress, group.items, { collapsible: true });
     const grid = section.querySelector('.server-card-grid');
     for (const item of group.items.sort((a, b) => a.gpu_index - b.gpu_index)) {
+      const model = normalizeGpuModel(item.gpu_name);
+      const officialMemory = officialMemoryByModel(model);
+      const memoryText = officialMemory ? `${officialMemory} GB` : '--';
       const card = document.createElement('article');
       card.className = 'history-card';
       card.innerHTML = `
         <h3>GPU ${item.gpu_index}</h3>
-        <p class="muted">${item.gpu_name}</p>
+        <p class="muted">型号：${model} · 显存：${memoryText}</p>
         <ul>
           <li><span>占用率</span><strong>${item.occupancy_rate}%</strong></li>
           <li><span>有效利用率</span><strong>${item.effective_utilization_rate}%</strong></li>
