@@ -106,6 +106,38 @@ function createServerSection(hostName, hostAddress, cards, { collapsible = true 
   return section;
 }
 
+function buildGpuCardNode(card) {
+  const template = document.getElementById('gpu-card-template');
+  let node;
+  if (template?.content) {
+    node = template.content.cloneNode(true);
+  } else {
+    const fallback = document.createElement('article');
+    fallback.className = 'gpu-card';
+    fallback.innerHTML = `
+      <div class="gpu-card-head">
+        <div>
+          <h3></h3>
+          <p class="muted"></p>
+        </div>
+      </div>
+      <div class="metrics"></div>
+    `;
+    node = document.createDocumentFragment();
+    node.appendChild(fallback);
+  }
+
+  node.querySelector('h3').textContent = `GPU ${card.gpu_index}`;
+  node.querySelector('.muted').textContent = `${card.gpu_name}`;
+  const metrics = node.querySelector('.metrics');
+  metrics.appendChild(metricRow('GPU util', `${card.utilization_gpu.toFixed(1)}%`, card.utilization_gpu));
+  const memoryPercent = card.memory_total_mb ? (card.memory_used_mb / card.memory_total_mb) * 100 : 0;
+  metrics.appendChild(metricRow('显存', `${card.memory_used_mb.toFixed(0)} / ${card.memory_total_mb.toFixed(0)} MB`, memoryPercent));
+  metrics.appendChild(metricRow('活动用户', card.active_users.length ? card.active_users.join(', ') : '无人'));
+
+  return node;
+}
+
 function renderCurrent(cards) {
   currentGrid.innerHTML = '';
   if (!cards.length) {
@@ -115,20 +147,12 @@ function renderCurrent(cards) {
   }
   currentGrid.classList.remove('empty-state');
   renderSummary(cards);
-  const template = document.getElementById('gpu-card-template');
   const grouped = groupByHost(cards);
   for (const group of Object.values(grouped)) {
     const section = createServerSection(group.hostName, group.hostAddress, group.items, { collapsible: true });
     const grid = section.querySelector('.server-card-grid');
     for (const card of group.items.sort((a, b) => a.gpu_index - b.gpu_index)) {
-      const node = template.content.cloneNode(true);
-      node.querySelector('h3').textContent = `GPU ${card.gpu_index}`;
-      node.querySelector('.muted').textContent = `${card.gpu_name}`;
-      const metrics = node.querySelector('.metrics');
-      metrics.appendChild(metricRow('GPU util', `${card.utilization_gpu.toFixed(1)}%`, card.utilization_gpu));
-      const memoryPercent = card.memory_total_mb ? (card.memory_used_mb / card.memory_total_mb) * 100 : 0;
-      metrics.appendChild(metricRow('显存', `${card.memory_used_mb.toFixed(0)} / ${card.memory_total_mb.toFixed(0)} MB`, memoryPercent));
-      metrics.appendChild(metricRow('活动用户', card.active_users.length ? card.active_users.join(', ') : '无人'));
+      const node = buildGpuCardNode(card);
       grid.appendChild(node);
     }
     currentGrid.appendChild(section);
