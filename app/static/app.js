@@ -47,7 +47,7 @@ function normalizeGpuModel(name) {
   if (upper.includes('L40S')) {
     return 'NVIDIA L40S';
   }
-  return raw || '未知型号';
+  return raw || 'Unknown model';
 }
 
 function officialMemoryByModel(model) {
@@ -68,8 +68,8 @@ function getHostSummary(cards) {
   const officialMemory = models.length === 1 ? officialMemoryByModel(modelLabel) : null;
   const memoryTotals = [...new Set(cards.map(card => card.memory_total_mb))].filter(Boolean);
   const memoryLabel = officialMemory
-    ? `${officialMemory} GB/卡`
-    : (memoryTotals.length === 1 ? `${mbToGb(memoryTotals[0])} GB/卡` : '多规格');
+    ? `${officialMemory} GB/card`
+    : (memoryTotals.length === 1 ? `${mbToGb(memoryTotals[0])} GB/card` : 'Mixed specs');
   return { totalCards, busyCards, modelLabel, memoryLabel };
 }
 
@@ -78,7 +78,7 @@ function getHistoryHostSummary(cards) {
   const models = [...new Set(cards.map(card => normalizeGpuModel(card.gpu_name)))];
   const modelLabel = models.length === 1 ? models[0] : `Mixed (${models.length})`;
   const officialMemory = models.length === 1 ? officialMemoryByModel(modelLabel) : null;
-  const memoryLabel = officialMemory ? `${officialMemory} GB/卡` : '--';
+  const memoryLabel = officialMemory ? `${officialMemory} GB/card` : '--';
   return { totalCards, modelLabel, memoryLabel };
 }
 
@@ -89,10 +89,10 @@ function renderSummary(cards) {
   const idle = cards.filter(card => card.is_idle).length;
   const avgUtil = total ? (cards.reduce((sum, card) => sum + card.utilization_gpu, 0) / total).toFixed(1) : '0.0';
   const values = [
-    ['总 GPU 数', total],
-    ['占用中', busy],
-    ['空闲', idle],
-    ['平均 util', `${avgUtil}%`],
+    ['Total GPUs', total],
+    ['Busy', busy],
+    ['Idle', idle],
+    ['Avg util', `${avgUtil}%`],
   ];
   for (const [label, value] of values) {
     const tile = document.createElement('div');
@@ -108,10 +108,10 @@ function createServerSection(hostName, hostAddress, cards, { collapsible = true 
 
   const summary = getHostSummary(cards);
   const summaryBadges = `
-    <span class="server-summary-badge">型号：${summary.modelLabel}</span>
-    <span class="server-summary-badge">显存：${summary.memoryLabel}</span>
-    <span class="server-summary-badge">总卡：${summary.totalCards}</span>
-    <span class="server-summary-badge">占用：${summary.busyCards}</span>
+    <span class="server-summary-badge">Model: ${summary.modelLabel}</span>
+    <span class="server-summary-badge">Memory: ${summary.memoryLabel}</span>
+    <span class="server-summary-badge">Cards: ${summary.totalCards}</span>
+    <span class="server-summary-badge">Busy: ${summary.busyCards}</span>
   `;
 
   const content = `
@@ -171,8 +171,8 @@ function buildGpuCardNode(card) {
   const metrics = node.querySelector('.metrics');
   metrics.appendChild(metricRow('GPU util', `${card.utilization_gpu.toFixed(1)}%`, card.utilization_gpu));
   const memoryPercent = card.memory_total_mb ? (card.memory_used_mb / card.memory_total_mb) * 100 : 0;
-  metrics.appendChild(metricRow('显存', `${card.memory_used_mb.toFixed(0)} / ${card.memory_total_mb.toFixed(0)} MB`, memoryPercent));
-  metrics.appendChild(metricRow('活动用户', card.active_users.length ? card.active_users.join(', ') : '无人'));
+  metrics.appendChild(metricRow('Memory', `${card.memory_used_mb.toFixed(0)} / ${card.memory_total_mb.toFixed(0)} MB`, memoryPercent));
+  metrics.appendChild(metricRow('Active users', card.active_users.length ? card.active_users.join(', ') : 'None'));
 
   return node;
 }
@@ -180,7 +180,7 @@ function buildGpuCardNode(card) {
 function renderCurrent(cards) {
   currentGrid.innerHTML = '';
   if (!cards.length) {
-    currentGrid.textContent = '暂无数据。请先验证连接，并等待自动采集或手动刷新当前状态。';
+    currentGrid.textContent = 'No current data yet. Complete access validation, then wait for auto collection or refresh manually.';
     currentGrid.classList.add('empty-state');
     return;
   }
@@ -201,7 +201,7 @@ function renderCurrent(cards) {
 function renderGpuHistory(items) {
   gpuHistoryGrid.innerHTML = '';
   if (!items.length) {
-    gpuHistoryGrid.textContent = '暂无历史聚合数据。先运行自动采集，等待形成日聚合后这里会展示结果。';
+    gpuHistoryGrid.textContent = 'No historical aggregates yet. Run collection and wait for daily aggregation to appear here.';
     gpuHistoryGrid.classList.add('empty-state');
     return;
   }
@@ -216,9 +216,9 @@ function renderGpuHistory(items) {
         <summary class="server-summary">
           <div class="server-summary-main">${group.hostName} · ${group.hostAddress}</div>
           <div class="server-summary-list">
-            <span class="server-summary-badge">型号：${summary.modelLabel}</span>
-            <span class="server-summary-badge">显存：${summary.memoryLabel}</span>
-            <span class="server-summary-badge">卡数：${summary.totalCards}</span>
+            <span class="server-summary-badge">Model: ${summary.modelLabel}</span>
+            <span class="server-summary-badge">Memory: ${summary.memoryLabel}</span>
+            <span class="server-summary-badge">Cards: ${summary.totalCards}</span>
           </div>
         </summary>
         <div class="server-body">
@@ -235,12 +235,12 @@ function renderGpuHistory(items) {
       card.className = 'history-card';
       card.innerHTML = `
         <h3>GPU ${item.gpu_index}</h3>
-        <p class="muted">型号：${model} · 显存：${memoryText}</p>
+        <p class="muted">Model: ${model} · Memory: ${memoryText}</p>
         <ul>
-          <li><span>占用率</span><strong>${item.occupancy_rate}%</strong></li>
-          <li><span>有效利用率</span><strong>${item.effective_utilization_rate}%</strong></li>
-          <li><span>平均 GPU util</span><strong>${item.average_gpu_utilization}%</strong></li>
-          <li><span>平均显存</span><strong>${item.average_memory_used_mb} MB</strong></li>
+          <li><span>Occupancy</span><strong>${item.occupancy_rate}%</strong></li>
+          <li><span>Effective utilization</span><strong>${item.effective_utilization_rate}%</strong></li>
+          <li><span>Avg GPU util</span><strong>${item.average_gpu_utilization}%</strong></li>
+          <li><span>Avg memory</span><strong>${item.average_memory_used_mb} MB</strong></li>
         </ul>
       `;
       grid.appendChild(card);
@@ -252,7 +252,7 @@ function renderGpuHistory(items) {
 function renderUsers(items) {
   userTableWrapper.innerHTML = '';
   if (!items.length) {
-    userTableWrapper.textContent = '暂无用户聚合数据。';
+    userTableWrapper.textContent = 'No user aggregates yet.';
     userTableWrapper.classList.add('empty-state');
     return;
   }
@@ -268,25 +268,25 @@ function renderUsers(items) {
       <div class="user-card-head">
         <div>
           <h3>${item.username}</h3>
-          <p class="muted">涉及服务器：${item.host_names.join(', ')}</p>
+          <p class="muted">Hosts: ${item.host_names.join(', ')}</p>
         </div>
         <div class="user-summary-list">
-          <span class="server-summary-badge">总时长：${item.gpu_hours} 小时</span>
-          <span class="server-summary-badge">日均：${item.daily_average_gpu_hours} 小时</span>
-          <span class="server-summary-badge">非空闲：${item.non_idle_hours} 小时</span>
-          <span class="server-summary-badge">平均 util：${item.average_gpu_utilization}%</span>
+          <span class="server-summary-badge">Total: ${item.gpu_hours} h</span>
+          <span class="server-summary-badge">Daily avg: ${item.daily_average_gpu_hours} h</span>
+          <span class="server-summary-badge">Non-idle: ${item.non_idle_hours} h</span>
+          <span class="server-summary-badge">Avg util: ${item.average_gpu_utilization}%</span>
         </div>
       </div>
       <details class="user-details">
-        <summary>查看各服务器详情</summary>
+        <summary>View per-host details</summary>
         <table class="table compact-table">
           <thead>
             <tr>
-              <th>服务器</th>
-              <th>GPU 使用时长</th>
-              <th>日均使用时长</th>
-              <th>非空闲时长</th>
-              <th>平均 util</th>
+              <th>Host</th>
+              <th>GPU hours</th>
+              <th>Daily avg hours</th>
+              <th>Non-idle hours</th>
+              <th>Avg util</th>
             </tr>
           </thead>
           <tbody>
@@ -295,9 +295,9 @@ function renderUsers(items) {
                 server => `
                   <tr>
                     <td>${server.host_name}<div class="table-subtext">${server.host_address}</div></td>
-                    <td>${server.gpu_hours} 小时</td>
-                    <td>${server.daily_average_gpu_hours} 小时</td>
-                    <td>${server.non_idle_hours} 小时</td>
+                    <td>${server.gpu_hours} h</td>
+                    <td>${server.daily_average_gpu_hours} h</td>
+                    <td>${server.non_idle_hours} h</td>
                     <td>${server.average_gpu_utilization}%</td>
                   </tr>
                 `
@@ -343,17 +343,17 @@ refreshButton?.addEventListener('click', async () => {
     const response = await fetchJson('/api/status/refresh', { method: 'POST' });
     renderCurrent(response.current_status || []);
     if (response.errors?.length) {
-      alert(`部分服务器刷新失败：\n${response.errors.join('\n')}`);
+      alert(`Refresh failed on some hosts:\n${response.errors.join('\n')}`);
     }
   } catch (error) {
-    alert(`刷新失败：${error.message}`);
+    alert(`Refresh failed: ${error.message}`);
   } finally {
     refreshButton.disabled = false;
   }
 });
 
 windowSelect?.addEventListener('change', () => {
-  refreshAll().catch(error => alert(`加载历史失败：${error.message}`));
+  refreshAll().catch(error => alert(`Failed to load history: ${error.message}`));
 });
 
 logoutButton?.addEventListener('click', async () => {
@@ -363,6 +363,6 @@ logoutButton?.addEventListener('click', async () => {
 
 if (bootstrap.accessibleHosts.length) {
   refreshAll().catch(error => {
-    currentGrid.textContent = `加载失败：${error.message}`;
+    currentGrid.textContent = `Load failed: ${error.message}`;
   });
 }

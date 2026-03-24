@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -11,14 +11,13 @@
       <div>
         <p class="eyebrow">GPU Monitor</p>
         <h1>{{ app_name }}</h1>
-        <p class="subtle">状态层与历史层按机器折叠显示，手动刷新只更新当前状态，不会累加用户使用时长。</p>
       </div>
       <div class="header-actions">
         {% if session_username %}
         <div class="session-card">
-          <span>当前用户：{{ session_username }}</span>
-          <span>可访问服务器：{{ accessible_hosts | length }}</span>
-          <button id="logout-button" class="secondary">退出</button>
+          <span>Current user: {{ session_username }}</span>
+          <span>Accessible hosts: {{ accessible_hosts | length }}</span>
+          <button id="logout-button" class="secondary">Sign out</button>
         </div>
         {% endif %}
       </div>
@@ -26,22 +25,22 @@
 
     <main class="layout">
       <section class="panel auth-panel">
-        <h2>连接验证</h2>
-        <p>输入你自己的 Linux 账号。系统会尝试 SSH 到 5 台 GPU 服务器，验证你能访问哪些机器，然后只展示那些机器的统计数据。</p>
+        <h2>Access Check</h2>
+        <p>Enter your own Linux account. The system will SSH into 5 GPU servers to verify which hosts you can access, and only show data from those hosts.</p>
         <form id="access-form" method="post" action="/session/access">
           <label>
-            用户名
-            <input name="username" required placeholder="例如 jinyang" value="{{ session_username or '' }}" />
+            Username
+            <input name="username" required placeholder="e.g. jinyang" value="{{ session_username or '' }}" />
           </label>
           <label>
-            密码
-            <input name="password" type="password" placeholder="如已配置 SSH key 可留空" />
+            Password
+            <input name="password" type="password" placeholder="Leave empty if SSH key is already configured" />
           </label>
           <label class="checkbox-row">
             <input name="use_agent" type="checkbox" value="true" />
-            优先使用部署机上的 SSH key / agent
+            Prefer host machine SSH key / agent
           </label>
-          <button type="submit">验证并进入面板</button>
+          <button type="submit">Validate and enter dashboard</button>
         </form>
         <div class="host-tags">
           {% for host in host_aliases %}
@@ -53,43 +52,43 @@
       <section class="panel overview-panel">
         <div class="section-title-row">
           <div>
-            <h2>状态层</h2>
-            <p class="muted section-note">每台机器折叠展示，机器摘要含型号、显存、总卡数和占用卡数。</p>
+            <h2>Current Status</h2>
+            <p class="muted section-note">Hosts are shown as collapsible groups. Summary includes model, memory, total cards, and busy cards.</p>
           </div>
-          <button id="refresh-button" class="secondary">刷新当前状态</button>
+          <button id="refresh-button" class="secondary">Refresh current status</button>
         </div>
         <div id="status-summary" class="stat-grid"></div>
-        <div id="current-gpu-grid" class="server-stack empty-state">请先完成连接验证。</div>
+        <div id="current-gpu-grid" class="server-stack empty-state">Please complete access validation first.</div>
       </section>
 
       <section class="panel history-panel">
         <div class="section-title-row">
           <div>
-            <h2>历史统计层</h2>
-            <p class="muted section-note">按机器折叠查看 GPU 历史统计。</p>
+            <h2>History</h2>
+            <p class="muted section-note">View host-level GPU history in collapsible groups.</p>
           </div>
           <div>
             <label>
-              时间范围
+              Time range
               <select id="window-select">
                 {% for window in history_windows %}
-                <option value="{{ window }}" {% if window == 30 %}selected{% endif %}>{{ window }} 天</option>
+                <option value="{{ window }}" {% if window == 30 %}selected{% endif %}>{{ window }} days</option>
                 {% endfor %}
               </select>
             </label>
           </div>
         </div>
-        <div id="gpu-history-grid" class="server-stack empty-state">连接后将自动加载近 7/14/20/30 天 GPU 利用率统计。</div>
+        <div id="gpu-history-grid" class="server-stack empty-state">After login, GPU history for 7/14/20/30 days will load automatically.</div>
       </section>
 
       <section class="panel users-panel">
         <div class="section-title-row">
           <div>
-            <h2>各个用户的 GPU 使用时间</h2>
-            <p class="muted section-note">默认只显示当前登录用户；lifu 和 panzhou 可查看所有用户。详情可展开查看每个服务器。</p>
+            <h2>User GPU Usage</h2>
+            <p class="muted section-note">By default, only the current user is shown. lifu and panzhou can view all users. Expand to see per-host details.</p>
           </div>
         </div>
-        <div id="user-table-wrapper" class="empty-state">连接后将显示你有权限查看的用户聚合数据。</div>
+        <div id="user-table-wrapper" class="empty-state">User aggregates you are allowed to view will appear after login.</div>
       </section>
     </main>
 
