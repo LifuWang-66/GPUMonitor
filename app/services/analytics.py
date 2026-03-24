@@ -8,31 +8,9 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models import CurrentGpuStatus, DailyGpuAggregate, DailyUserAggregate, Host
-from app.schemas import CurrentGpuResponse, GpuSummaryResponse, TrendPoint, UserServerBreakdown, UserSummaryResponse
-from app.services.ssh_client import HostSnapshot
+from app.schemas import CurrentGpuResponse, GpuSummaryResponse, TrendPoint, UserSummaryResponse
 
 settings = get_settings()
-ADMIN_USERNAMES = {'lifu', 'panzhou'}
-
-
-def snapshot_to_current_status(snapshot: HostSnapshot) -> list[CurrentGpuResponse]:
-    return [
-        CurrentGpuResponse(
-            host_name=snapshot.host_name,
-            host_address=snapshot.host_address,
-            gpu_index=record.gpu_index,
-            gpu_name=record.gpu_name,
-            utilization_gpu=record.utilization_gpu,
-            memory_used_mb=record.memory_used_mb,
-            memory_total_mb=record.memory_total_mb,
-            temperature_c=record.temperature_c,
-            active_users=record.active_users,
-            process_count=record.process_count,
-            is_idle=record.utilization_gpu < 10.0,
-            last_seen_at=snapshot.collected_at.replace(tzinfo=None),
-        )
-        for record in snapshot.gpu_records
-    ]
 
 
 def get_current_status(db: Session, allowed_hosts: list[str]) -> list[CurrentGpuResponse]:
@@ -92,9 +70,9 @@ def get_gpu_history(db: Session, allowed_hosts: list[str], days: int) -> list[Gp
             trend.append(
                 TrendPoint(
                     label=item.date.isoformat(),
-                    occupancy_rate=round((item.busy_samples or 0) / sample_count * 100, 2),
-                    effective_utilization_rate=round((item.non_idle_samples or 0) / sample_count * 100, 2),
-                    average_gpu_utilization=round((item.total_utilization or 0) / sample_count, 2),
+                    occupancy_rate=round(item.busy_samples / sample_count * 100, 2),
+                    effective_utilization_rate=round(item.non_idle_samples / sample_count * 100, 2),
+                    average_gpu_utilization=round(item.total_utilization / sample_count, 2),
                 )
             )
         sample_count = samples or 1
@@ -114,88 +92,50 @@ def get_gpu_history(db: Session, allowed_hosts: list[str], days: int) -> list[Gp
     return results
 
 
-def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_username: str) -> list[UserSummaryResponse]:
-    if not allowed_hosts or not viewer_username:
+def get_user_history(db: Session, allowed_hosts: list[str], days: int) -> list[UserSummaryResponse]:
+    if not allowed_hosts:
         return []
 
     since = datetime.now(timezone.utc).date() - timedelta(days=days - 1)
     rows = db.execute(
         select(DailyUserAggregate, Host)
         .join(Host, DailyUserAggregate.host_id == Host.id)
-        .where(Host.address.in_(allowed_hosts), DailyUserAggregate.date >= since)
+        .where(
+            Host.address.in_(allowed_hosts),
+            DailyUserAggregate.date >= since,
+        )
         .order_by(DailyUserAggregate.username, Host.address)
     ).all()
 
     sample_hours = settings.collector_interval_minutes / 60
-    is_admin = viewer_username in ADMIN_USERNAMES
-
-    grouped: dict[str, dict] = defaultdict(
-        lambda: {
-            'host_names': [],
-            'host_addresses': [],
-            'gpu_samples': 0,
-            'non_idle_samples': 0,
-            'total_utilization': 0.0,
-            'server_breakdown': defaultdict(
-                lambda: {
-                    'host_name': '',
-                    'host_address': '',
-                    'gpu_samples': 0,
-                    'non_idle_samples': 0,
-                    'total_utilization': 0.0,
-                }
-            ),
-        }
-    )
+    grouped: dict[tuple[str, str], dict] = {}
 
     for daily, host in rows:
-        if not is_admin and daily.username != viewer_username:
-            continue
+        key = (daily.username, host.address)
+        if key not in grouped:
+            grouped[key] = {
+                'username': daily.username,
+                'host_name': host.name,
+                'host_address': host.address,
+                'gpu_samples': 0,
+                'non_idle_samples': 0,
+                'total_utilization': 0.0,
+            }
 
-        bucket = grouped[daily.username]
-        if host.name not in bucket['host_names']:
-            bucket['host_names'].append(host.name)
-        if host.address not in bucket['host_addresses']:
-            bucket['host_addresses'].append(host.address)
+        grouped[key]['gpu_samples'] += daily.gpu_samples or 0
+        grouped[key]['non_idle_samples'] += daily.non_idle_samples or 0
+        grouped[key]['total_utilization'] += daily.total_utilization or 0.0
 
-        gpu_samples = daily.gpu_samples or 0
-        non_idle_samples = daily.non_idle_samples or 0
-        total_utilization = daily.total_utilization or 0.0
-
-        bucket['gpu_samples'] += gpu_samples
-        bucket['non_idle_samples'] += non_idle_samples
-        bucket['total_utilization'] += total_utilization
-
-        server_item = bucket['server_breakdown'][host.address]
-        server_item['host_name'] = host.name
-        server_item['host_address'] = host.address
-        server_item['gpu_samples'] += gpu_samples
-        server_item['non_idle_samples'] += non_idle_samples
-        server_item['total_utilization'] += total_utilization
-
-    results: list[UserSummaryResponse] = []
-    for username, item in sorted(grouped.items(), key=lambda entry: (-entry[1]['gpu_samples'], entry[0])):
-        server_breakdown = [
-            UserServerBreakdown(
-                host_name=server['host_name'],
-                host_address=server['host_address'],
-                gpu_hours=round(server['gpu_samples'] * sample_hours, 2),
-                non_idle_hours=round(server['non_idle_samples'] * sample_hours, 2),
-                average_gpu_utilization=round(server['total_utilization'] / (server['gpu_samples'] or 1), 2),
-            )
-            for _, server in sorted(item['server_breakdown'].items())
-        ]
-        total_gpu_hours = round(item['gpu_samples'] * sample_hours, 2)
-        results.append(
-            UserSummaryResponse(
-                username=username,
-                host_names=sorted(item['host_names']),
-                host_addresses=sorted(item['host_addresses']),
-                gpu_hours=total_gpu_hours,
-                non_idle_hours=round(item['non_idle_samples'] * sample_hours, 2),
-                average_gpu_utilization=round(item['total_utilization'] / (item['gpu_samples'] or 1), 2),
-                daily_average_gpu_hours=round(total_gpu_hours / max(days, 1), 2),
-                server_breakdown=server_breakdown,
-            )
+    return [
+        UserSummaryResponse(
+            username=item['username'],
+            host_name=item['host_name'],
+            host_address=item['host_address'],
+            gpu_hours=round(item['gpu_samples'] * sample_hours, 2),
+            non_idle_hours=round(item['non_idle_samples'] * sample_hours, 2),
+            average_gpu_utilization=round(
+                item['total_utilization'] / (item['gpu_samples'] or 1), 2
+            ),
         )
-    return results
+        for item in grouped.values()
+    ]

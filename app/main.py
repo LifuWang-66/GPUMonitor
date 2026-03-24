@@ -5,17 +5,17 @@ from contextlib import asynccontextmanager
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
-from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import get_settings
 from app.db import Base, SessionLocal, engine, get_db
 from app.schemas import CredentialCheckRequest, HostAccessResult, SessionResponse
 from app.services.analytics import get_current_status, get_gpu_history, get_user_history
-from app.services.collector import collect_live_current_status, ensure_hosts, run_collection
+from app.services.collector import ensure_hosts, run_collection
 from app.services.ssh_client import SshCredentials, validate_host_access
 
 settings = get_settings()
@@ -120,12 +120,6 @@ def api_current_status(allowed_hosts: list[str] = Depends(get_allowed_hosts), db
     return get_current_status(db, allowed_hosts)
 
 
-@app.post('/api/status/refresh')
-def api_refresh_current_status(allowed_hosts: list[str] = Depends(get_allowed_hosts)):
-    current_status, errors = collect_live_current_status(allowed_hosts)
-    return {'current_status': current_status, 'errors': errors}
-
-
 @app.get('/api/history/gpus')
 def api_gpu_history(days: int = 30, allowed_hosts: list[str] = Depends(get_allowed_hosts), db: Session = Depends(get_db)):
     if days not in settings.allowed_history_windows:
@@ -134,10 +128,10 @@ def api_gpu_history(days: int = 30, allowed_hosts: list[str] = Depends(get_allow
 
 
 @app.get('/api/history/users')
-def api_user_history(request: Request, days: int = 30, allowed_hosts: list[str] = Depends(get_allowed_hosts), db: Session = Depends(get_db)):
+def api_user_history(days: int = 30, allowed_hosts: list[str] = Depends(get_allowed_hosts), db: Session = Depends(get_db)):
     if days not in settings.allowed_history_windows:
         raise HTTPException(status_code=400, detail='不支持的时间窗口。')
-    return get_user_history(db, allowed_hosts, days, viewer_username=request.session.get('username', ''))
+    return get_user_history(db, allowed_hosts, days)
 
 
 @app.post('/api/collector/run')

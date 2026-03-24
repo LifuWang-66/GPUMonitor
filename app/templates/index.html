@@ -11,7 +11,7 @@
       <div>
         <p class="eyebrow">GPU Monitor</p>
         <h1>{{ app_name }}</h1>
-        <p class="subtle">状态层与历史层按机器折叠显示，手动刷新只更新当前状态，不会累加用户使用时长。</p>
+        <p class="subtle">10 分钟采样、60 天聚合保留，只展示当前用户有权限访问的服务器。</p>
       </div>
       <div class="header-actions">
         {% if session_username %}
@@ -52,22 +52,16 @@
 
       <section class="panel overview-panel">
         <div class="section-title-row">
-          <div>
-            <h2>状态层</h2>
-            <p class="muted section-note">每台机器折叠展示，机器摘要含型号、显存、总卡数和占用卡数。</p>
-          </div>
-          <button id="refresh-button" class="secondary">刷新当前状态</button>
+          <h2>状态层</h2>
+          <button id="refresh-button" class="secondary">刷新数据</button>
         </div>
         <div id="status-summary" class="stat-grid"></div>
-        <div id="current-gpu-grid" class="server-stack empty-state">请先完成连接验证。</div>
+        <div id="current-gpu-grid" class="server-groups empty-state">请先完成连接验证。</div>
       </section>
 
       <section class="panel history-panel">
         <div class="section-title-row">
-          <div>
-            <h2>历史统计层</h2>
-            <p class="muted section-note">按机器折叠查看 GPU 历史统计。</p>
-          </div>
+          <h2>历史统计层</h2>
           <div>
             <label>
               时间范围
@@ -79,19 +73,28 @@
             </label>
           </div>
         </div>
-        <div id="gpu-history-grid" class="server-stack empty-state">连接后将自动加载近 7/14/20/30 天 GPU 利用率统计。</div>
+        <div id="gpu-history-grid" class="server-groups empty-state">连接后将自动加载近 7/14/20/30 天 GPU 利用率统计。</div>
       </section>
 
       <section class="panel users-panel">
         <div class="section-title-row">
-          <div>
-            <h2>各个用户的 GPU 使用时间</h2>
-            <p class="muted section-note">默认只显示当前登录用户；lifu 和 panzhou 可查看所有用户。详情可展开查看每个服务器。</p>
-          </div>
+          <h2>各个用户的 GPU 使用时间</h2>
         </div>
         <div id="user-table-wrapper" class="empty-state">连接后将显示你有权限查看的用户聚合数据。</div>
       </section>
     </main>
+
+    <template id="server-group-template">
+      <section class="server-group">
+        <div class="server-group-header">
+          <div>
+            <h3 class="server-group-title"></h3>
+            <p class="muted server-group-subtitle"></p>
+          </div>
+        </div>
+        <div class="card-grid server-group-grid"></div>
+      </section>
+    </template>
 
     <template id="gpu-card-template">
       <article class="gpu-card">
@@ -100,6 +103,7 @@
             <h3></h3>
             <p class="muted"></p>
           </div>
+          <span class="badge"></span>
         </div>
         <div class="metrics"></div>
       </article>
