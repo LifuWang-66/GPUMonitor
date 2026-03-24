@@ -73,6 +73,15 @@ function getHostSummary(cards) {
   return { totalCards, busyCards, modelLabel, memoryLabel };
 }
 
+function getHistoryHostSummary(cards) {
+  const totalCards = cards.length;
+  const models = [...new Set(cards.map(card => normalizeGpuModel(card.gpu_name)))];
+  const modelLabel = models.length === 1 ? models[0] : `Mixed (${models.length})`;
+  const officialMemory = models.length === 1 ? officialMemoryByModel(modelLabel) : null;
+  const memoryLabel = officialMemory ? `${officialMemory} GB/卡` : '--';
+  return { totalCards, modelLabel, memoryLabel };
+}
+
 function renderSummary(cards) {
   statusSummary.innerHTML = '';
   const total = cards.length;
@@ -199,26 +208,24 @@ function renderGpuHistory(items) {
   gpuHistoryGrid.classList.remove('empty-state');
   const grouped = groupByHost(items);
   for (const group of Object.values(grouped)) {
-    const section = createServerSection(group.hostName, group.hostAddress, group.items, { collapsible: true });
-    const grid = section.querySelector('.server-card-grid');
-    for (const item of group.items.sort((a, b) => a.gpu_index - b.gpu_index)) {
-      const model = normalizeGpuModel(item.gpu_name);
-      const officialMemory = officialMemoryByModel(model);
-      const memoryText = officialMemory ? `${officialMemory} GB` : '--';
-      const card = document.createElement('article');
-      card.className = 'history-card';
-      card.innerHTML = `
-        <h3>GPU ${item.gpu_index}</h3>
-        <p class="muted">型号：${model} · 显存：${memoryText}</p>
-        <ul>
-          <li><span>占用率</span><strong>${item.occupancy_rate}%</strong></li>
-          <li><span>有效利用率</span><strong>${item.effective_utilization_rate}%</strong></li>
-          <li><span>平均 GPU util</span><strong>${item.average_gpu_utilization}%</strong></li>
-          <li><span>平均显存</span><strong>${item.average_memory_used_mb} MB</strong></li>
-        </ul>
-      `;
-      grid.appendChild(card);
-    }
+    const summary = getHistoryHostSummary(group.items);
+    const section = document.createElement('section');
+    section.className = 'server-section history-lite';
+    section.innerHTML = `
+      <details class="server-details">
+        <summary class="server-summary">
+          <div class="server-summary-main">${group.hostName} · ${group.hostAddress}</div>
+          <div class="server-summary-list">
+            <span class="server-summary-badge">型号：${summary.modelLabel}</span>
+            <span class="server-summary-badge">显存：${summary.memoryLabel}</span>
+            <span class="server-summary-badge">卡数：${summary.totalCards}</span>
+          </div>
+        </summary>
+        <div class="server-body">
+          <p class="muted">历史统计层当前仅展示 GPU 型号、显存与卡数。</p>
+        </div>
+      </details>
+    `;
     gpuHistoryGrid.appendChild(section);
   }
 }
