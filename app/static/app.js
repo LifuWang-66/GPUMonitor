@@ -222,10 +222,29 @@ function renderGpuHistory(items) {
           </div>
         </summary>
         <div class="server-body">
-          <p class="muted">历史统计层当前仅展示 GPU 型号、显存与卡数。</p>
+          <div class="server-card-grid"></div>
         </div>
       </details>
     `;
+    const grid = section.querySelector('.server-card-grid');
+    for (const item of group.items.sort((a, b) => a.gpu_index - b.gpu_index)) {
+      const model = normalizeGpuModel(item.gpu_name);
+      const officialMemory = officialMemoryByModel(model);
+      const memoryText = officialMemory ? `${officialMemory} GB` : '--';
+      const card = document.createElement('article');
+      card.className = 'history-card';
+      card.innerHTML = `
+        <h3>GPU ${item.gpu_index}</h3>
+        <p class="muted">型号：${model} · 显存：${memoryText}</p>
+        <ul>
+          <li><span>占用率</span><strong>${item.occupancy_rate}%</strong></li>
+          <li><span>有效利用率</span><strong>${item.effective_utilization_rate}%</strong></li>
+          <li><span>平均 GPU util</span><strong>${item.average_gpu_utilization}%</strong></li>
+          <li><span>平均显存</span><strong>${item.average_memory_used_mb} MB</strong></li>
+        </ul>
+      `;
+      grid.appendChild(card);
+    }
     gpuHistoryGrid.appendChild(section);
   }
 }
