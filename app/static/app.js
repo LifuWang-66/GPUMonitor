@@ -40,10 +40,13 @@ function mbToGb(mb) {
 
 function getHostSummary(cards) {
   const totalCards = cards.length;
-  const busyCards = cards.filter(card => card.process_count > 0).length;
+  const hasProcessCount = cards.some(card => typeof card.process_count === 'number');
+  const busyCards = hasProcessCount
+    ? cards.filter(card => (card.process_count || 0) > 0).length
+    : cards.filter(card => (card.occupancy_rate || 0) > 0).length;
   const models = [...new Set(cards.map(card => card.gpu_name))];
   const modelLabel = models.length === 1 ? models[0] : `Mixed (${models.length})`;
-  const memoryTotals = [...new Set(cards.map(card => card.memory_total_mb))];
+  const memoryTotals = [...new Set(cards.map(card => card.memory_total_mb))].filter(Boolean);
   const memoryLabel = memoryTotals.length === 1 ? `${mbToGb(memoryTotals[0])} GB/卡` : '多规格';
   return { totalCards, busyCards, modelLabel, memoryLabel };
 }
@@ -73,6 +76,13 @@ function createServerSection(hostName, hostAddress, cards, { collapsible = true 
   section.className = 'server-section';
 
   const summary = getHostSummary(cards);
+  const summaryBadges = `
+    <span class="server-summary-badge">型号：${summary.modelLabel}</span>
+    <span class="server-summary-badge">显存：${summary.memoryLabel}</span>
+    <span class="server-summary-badge">总卡：${summary.totalCards}</span>
+    <span class="server-summary-badge">占用：${summary.busyCards}</span>
+  `;
+
   const content = `
     <div class="server-section-head">
       <div>
@@ -82,20 +92,18 @@ function createServerSection(hostName, hostAddress, cards, { collapsible = true 
         </div>
         <p class="muted">${hostAddress}</p>
       </div>
-      <div class="server-summary-list">
-        <span class="server-summary-badge">型号：${summary.modelLabel}</span>
-        <span class="server-summary-badge">显存：${summary.memoryLabel}</span>
-        <span class="server-summary-badge">总卡：${summary.totalCards}</span>
-        <span class="server-summary-badge">占用：${summary.busyCards}</span>
-      </div>
+      <div class="server-summary-list">${summaryBadges}</div>
     </div>
     <div class="server-card-grid"></div>
   `;
 
   if (collapsible) {
     section.innerHTML = `
-      <details class="server-details" open>
-        <summary class="server-summary">${hostName} · ${hostAddress}</summary>
+      <details class="server-details">
+        <summary class="server-summary">
+          <div class="server-summary-main">${hostName} · ${hostAddress}</div>
+          <div class="server-summary-list">${summaryBadges}</div>
+        </summary>
         <div class="server-body">${content}</div>
       </details>
     `;
@@ -225,6 +233,7 @@ function renderUsers(items) {
             <tr>
               <th>服务器</th>
               <th>GPU 使用时长</th>
+              <th>日均使用时长</th>
               <th>非空闲时长</th>
               <th>平均 util</th>
             </tr>
@@ -236,6 +245,7 @@ function renderUsers(items) {
                   <tr>
                     <td>${server.host_name}<div class="table-subtext">${server.host_address}</div></td>
                     <td>${server.gpu_hours} 小时</td>
+                    <td>${server.daily_average_gpu_hours} 小时</td>
                     <td>${server.non_idle_hours} 小时</td>
                     <td>${server.average_gpu_utilization}%</td>
                   </tr>

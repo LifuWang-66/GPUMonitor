@@ -107,11 +107,14 @@ button.secondary {
   cursor: pointer;
   list-style: none;
   padding: 12px 14px;
-  font-weight: 700;
   background: rgba(94, 234, 212, 0.08);
 }
 .server-summary::-webkit-details-marker {
   display: none;
+}
+.server-summary-main {
+  font-weight: 700;
+  margin-bottom: 8px;
 }
 .server-body {
   padding: 12px;
@@ -243,10 +246,11 @@ button.secondary {
     align-items: flex-start;
   }
   #access-form,
-  .server-card-grid,
+  .server-card-grid {
+    grid-template-columns: 1fr;
+  }
   .server-summary-list,
   .user-summary-list {
-    grid-template-columns: 1fr;
     justify-content: flex-start;
   }
 }

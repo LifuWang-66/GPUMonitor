@@ -182,6 +182,7 @@ def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_us
                 gpu_hours=round(server['gpu_samples'] * sample_hours, 2),
                 non_idle_hours=round(server['non_idle_samples'] * sample_hours, 2),
                 average_gpu_utilization=round(server['total_utilization'] / (server['gpu_samples'] or 1), 2),
+                daily_average_gpu_hours=round((server['gpu_samples'] * sample_hours) / max(days, 1), 2),
             )
             for _, server in sorted(item['server_breakdown'].items())
         ]

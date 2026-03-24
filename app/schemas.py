@@ -60,6 +60,7 @@ class UserServerBreakdown(BaseModel):
     gpu_hours: float
     non_idle_hours: float
     average_gpu_utilization: float
+    daily_average_gpu_hours: float
 
 
 class UserSummaryResponse(BaseModel):
