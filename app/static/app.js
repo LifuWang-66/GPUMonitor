@@ -159,16 +159,7 @@ function renderGpuHistory(items) {
           <li><span>平均 GPU util</span><strong>${item.average_gpu_utilization}%</strong></li>
           <li><span>平均显存</span><strong>${item.average_memory_used_mb} MB</strong></li>
         </ul>
-        <div class="sparkline"></div>
       `;
-
-      const sparkline = card.querySelector('.sparkline');
-      for (const point of item.trend) {
-        const bar = document.createElement('span');
-        bar.title = `${point.label}: ${point.average_gpu_utilization}%`;
-        bar.style.height = `${Math.max(point.average_gpu_utilization, 8)}%`;
-        sparkline.appendChild(bar);
-      }
 
       serverGrid.appendChild(card);
     }

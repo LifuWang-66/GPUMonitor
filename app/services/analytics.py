@@ -95,22 +95,47 @@ def get_gpu_history(db: Session, allowed_hosts: list[str], days: int) -> list[Gp
 def get_user_history(db: Session, allowed_hosts: list[str], days: int) -> list[UserSummaryResponse]:
     if not allowed_hosts:
         return []
+
     since = datetime.now(timezone.utc).date() - timedelta(days=days - 1)
     rows = db.execute(
         select(DailyUserAggregate, Host)
         .join(Host, DailyUserAggregate.host_id == Host.id)
-        .where(Host.address.in_(allowed_hosts), DailyUserAggregate.date >= since)
+        .where(
+            Host.address.in_(allowed_hosts),
+            DailyUserAggregate.date >= since,
+        )
         .order_by(DailyUserAggregate.username, Host.address)
     ).all()
+
     sample_hours = settings.collector_interval_minutes / 60
+    grouped: dict[tuple[str, str], dict] = {}
+
+    for daily, host in rows:
+        key = (daily.username, host.address)
+        if key not in grouped:
+            grouped[key] = {
+                'username': daily.username,
+                'host_name': host.name,
+                'host_address': host.address,
+                'gpu_samples': 0,
+                'non_idle_samples': 0,
+                'total_utilization': 0.0,
+            }
+
+        grouped[key]['gpu_samples'] += daily.gpu_samples or 0
+        grouped[key]['non_idle_samples'] += daily.non_idle_samples or 0
+        grouped[key]['total_utilization'] += daily.total_utilization or 0.0
+
     return [
         UserSummaryResponse(
-            username=daily.username,
-            host_name=host.name,
-            host_address=host.address,
-            gpu_hours=round(daily.gpu_samples * sample_hours, 2),
-            non_idle_hours=round(daily.non_idle_samples * sample_hours, 2),
-            average_gpu_utilization=round(daily.total_utilization / (daily.gpu_samples or 1), 2),
+            username=item['username'],
+            host_name=item['host_name'],
+            host_address=item['host_address'],
+            gpu_hours=round(item['gpu_samples'] * sample_hours, 2),
+            non_idle_hours=round(item['non_idle_samples'] * sample_hours, 2),
+            average_gpu_utilization=round(
+                item['total_utilization'] / (item['gpu_samples'] or 1), 2
+            ),
         )
-        for daily, host in rows
+        for item in grouped.values()
     ]
