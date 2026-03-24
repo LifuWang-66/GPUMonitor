@@ -8,11 +8,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import get_settings
 from app.db import Base, SessionLocal, engine, get_db
+from app.models import UserProfile
 from app.schemas import CredentialCheckRequest, HostAccessResult, SessionResponse
 from app.services.analytics import get_current_status, get_gpu_history, get_user_history
 from app.services.collector import collect_live_current_status, ensure_hosts, run_collection
@@ -67,13 +69,25 @@ def home(request: Request):
             'host_aliases': settings.hosts,
             'history_windows': settings.allowed_history_windows,
             'session_username': request.session.get('username'),
+            'session_email': request.session.get('email'),
             'accessible_hosts': request.session.get('accessible_hosts', []),
         },
     )
 
 
 @app.post('/api/session/access', response_model=list[HostAccessResult])
-def create_access_session(payload: CredentialCheckRequest, request: Request):
+def create_access_session(payload: CredentialCheckRequest, request: Request, db: Session = Depends(get_db)):
+    profile = db.scalar(select(UserProfile).where(UserProfile.username == payload.username))
+    input_email = (payload.email or '').strip() or None
+    if profile is None:
+        if not input_email:
+            raise HTTPException(status_code=400, detail='Email is required the first time this user logs in.')
+        profile = UserProfile(username=payload.username, email=input_email)
+        db.add(profile)
+    elif input_email and input_email != profile.email:
+        profile.email = input_email
+    db.commit()
+
     credentials = SshCredentials(username=payload.username, password=payload.password, use_agent=payload.use_agent)
     results: list[HostAccessResult] = []
     accessible_hosts: list[str] = []
@@ -85,6 +99,7 @@ def create_access_session(payload: CredentialCheckRequest, request: Request):
     if not accessible_hosts:
         raise HTTPException(status_code=400, detail='当前凭据无法访问任何 GPU 服务器。')
     request.session['username'] = payload.username
+    request.session['email'] = profile.email
     request.session['accessible_hosts'] = accessible_hosts
     return results
 
@@ -93,24 +108,32 @@ def create_access_session(payload: CredentialCheckRequest, request: Request):
 def create_access_session_form(
     request: Request,
     username: str = Form(...),
+    email: str = Form(default=''),
     password: str = Form(default=''),
     use_agent: bool = Form(default=False),
+    db: Session = Depends(get_db),
 ):
-    create_access_session(CredentialCheckRequest(username=username, password=password or None, use_agent=use_agent), request)
+    create_access_session(
+        CredentialCheckRequest(username=username, email=email or None, password=password or None, use_agent=use_agent),
+        request,
+        db,
+    )
     return RedirectResponse(url='/', status_code=303)
 
 
 @app.post('/api/session/logout', response_model=SessionResponse)
 def logout(request: Request):
     username = request.session.get('username', '')
+    email = request.session.get('email')
     request.session.clear()
-    return SessionResponse(username=username, accessible_hosts=[])
+    return SessionResponse(username=username, email=email, accessible_hosts=[])
 
 
 @app.get('/api/session', response_model=SessionResponse)
 def get_session(request: Request):
     return SessionResponse(
         username=request.session.get('username', ''),
+        email=request.session.get('email'),
         accessible_hosts=request.session.get('accessible_hosts', []),
     )
 

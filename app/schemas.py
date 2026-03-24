@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 
 class CredentialCheckRequest(BaseModel):
     username: str = Field(min_length=1)
+    email: str | None = None
     password: str | None = None
     use_agent: bool = False
 
@@ -17,6 +18,7 @@ class HostAccessResult(BaseModel):
 
 class SessionResponse(BaseModel):
     username: str
+    email: str | None = None
     accessible_hosts: list[str]
 
 

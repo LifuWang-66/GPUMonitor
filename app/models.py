@@ -17,6 +17,15 @@ class Host(Base):
     current_statuses = relationship('CurrentGpuStatus', back_populates='host', cascade='all, delete-orphan')
 
 
+class UserProfile(Base):
+    __tablename__ = 'user_profiles'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    username: Mapped[str] = mapped_column(String(120), unique=True, nullable=False, index=True)
+    email: Mapped[str] = mapped_column(String(320), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 class CurrentGpuStatus(Base):
     __tablename__ = 'current_gpu_statuses'
     __table_args__ = (UniqueConstraint('host_id', 'gpu_index', name='uq_current_status_host_gpu'),)
@@ -65,3 +74,25 @@ class DailyUserAggregate(Base):
     gpu_samples: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     non_idle_samples: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     total_utilization: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+
+
+class UserUtilizationSample(Base):
+    __tablename__ = 'user_utilization_samples'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    host_id: Mapped[int] = mapped_column(ForeignKey('hosts.id'), nullable=False, index=True)
+    username: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    sampled_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    average_gpu_utilization: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+
+
+class NotificationEvent(Base):
+    __tablename__ = 'notification_events'
+    __table_args__ = (UniqueConstraint('host_id', 'username', 'event_type', 'event_key', name='uq_notification_dedupe'),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    host_id: Mapped[int] = mapped_column(ForeignKey('hosts.id'), nullable=False, index=True)
+    username: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    event_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    sent_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)

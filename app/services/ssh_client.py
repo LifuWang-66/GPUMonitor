@@ -32,6 +32,8 @@ PID_USER_QUERY = (
     'PY'
 )
 HOME_USERS_QUERY = 'ls /home'
+STORAGE_QUERY = "df -B1 /home | awk 'NR==2 {print $3}'"
+HOME_USER_USAGE_QUERY = "du -sb /home/* 2>/dev/null || true"
 
 
 @dataclass
@@ -61,6 +63,8 @@ class HostSnapshot:
     host_address: str
     collected_at: datetime
     gpu_records: list[GpuRecord]
+    storage_used_bytes: int = 0
+    home_user_used_bytes: dict[str, int] | None = None
 
 
 class RemoteCollectorError(RuntimeError):
@@ -112,11 +116,60 @@ def fetch_home_users(host: str, credentials: SshCredentials) -> list[str]:
     return [line.strip() for line in output.splitlines() if line.strip()]
 
 
+def kill_user_gpu_processes(host: str, credentials: SshCredentials, username: str) -> str:
+    sudo_password = credentials.password or ''
+    command = (
+        "python3 - <<'PY'\n"
+        "import subprocess\n"
+        "target = " + repr(username) + "\n"
+        "sudo_password = " + repr(sudo_password) + "\n"
+        "out = subprocess.check_output('nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits || true', shell=True, text=True)\n"
+        "pids = [p.strip() for p in out.splitlines() if p.strip().isdigit()]\n"
+        "killed = []\n"
+        "for pid in pids:\n"
+        "    try:\n"
+        "        owner = subprocess.check_output(f'ps -o user= -p {pid}', shell=True, text=True).strip()\n"
+        "    except Exception:\n"
+        "        continue\n"
+        "    if owner != target:\n"
+        "        continue\n"
+        "    try:\n"
+        "        subprocess.check_call(['kill', '-9', pid])\n"
+        "        killed.append(pid)\n"
+        "        continue\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    try:\n"
+        "        if not sudo_password:\n"
+        "            continue\n"
+        "        subprocess.run(['sudo', '-S', 'kill', '-9', pid], input=(sudo_password + '\\n').encode(), check=True)\n"
+        "        killed.append(pid)\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "print(','.join(killed))\n"
+        "PY"
+    )
+    return execute_command(host, credentials, command)
+
+
 def collect_host_snapshot(host_name: str, host_address: str, credentials: SshCredentials) -> HostSnapshot:
     gpu_output = execute_command(host_address, credentials, GPU_QUERY)
     process_output = execute_command(host_address, credentials, PROCESS_QUERY)
     pid_users_raw = execute_command(host_address, credentials, PID_USER_QUERY)
+    storage_used_raw = execute_command(host_address, credentials, STORAGE_QUERY)
+    home_user_usage_raw = execute_command(host_address, credentials, HOME_USER_USAGE_QUERY)
     pid_users = json.loads(pid_users_raw or '{}')
+    storage_used_bytes = int(storage_used_raw or 0)
+    home_user_used_bytes: dict[str, int] = {}
+    for row in home_user_usage_raw.splitlines():
+        parts = row.strip().split(None, 1)
+        if len(parts) != 2:
+            continue
+        size_text, path = parts
+        if not size_text.isdigit():
+            continue
+        username = path.rstrip('/').split('/')[-1]
+        home_user_used_bytes[username] = int(size_text)
 
     uuid_to_users: dict[str, list[str]] = {}
     uuid_to_count: dict[str, int] = {}
@@ -158,4 +211,6 @@ def collect_host_snapshot(host_name: str, host_address: str, credentials: SshCre
         host_address=host_address,
         collected_at=datetime.now(timezone.utc),
         gpu_records=gpu_records,
+        storage_used_bytes=storage_used_bytes,
+        home_user_used_bytes=home_user_used_bytes,
     )

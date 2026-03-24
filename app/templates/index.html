@@ -33,6 +33,10 @@
             <input name="username" required placeholder="e.g. jinyang" value="{{ session_username or '' }}" />
           </label>
           <label>
+            Email
+            <input name="email" type="email" placeholder="Required on first login; optional later to keep current email" value="{{ session_email or '' }}" />
+          </label>
+          <label>
             Password
             <input name="password" type="password" placeholder="Leave empty if SSH key is already configured" />
           </label>
@@ -85,6 +89,7 @@
         <div class="section-title-row">
           <div>
             <h2>User GPU Usage</h2>
+            <p class="muted section-note">By default, only the current user is shown. lifu and panzhou can view all users. Expand to see per-host details.</p>
           </div>
         </div>
         <div id="user-table-wrapper" class="empty-state">User aggregates you are allowed to view will appear after login.</div>

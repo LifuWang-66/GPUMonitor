@@ -21,10 +21,26 @@ class Settings(BaseSettings):
     collector_ssh_key_path: str | None = None
     collector_ssh_port: int = 22
     ssh_connect_timeout_seconds: int = 8
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from_email: str | None = None
+    smtp_use_tls: bool = True
+    incident_form_url: str = 'https://docs.google.com/forms/d/1kAhrPkpn6kSLvp1n_d-UOCurd5c_X1IGXI-vqyIWBM8'
     excluded_usernames: str = 'dataset_model,lost+found,tempuser'
     allowed_history_windows: List[int] = Field(default_factory=lambda: [7, 14, 20, 30])
 
-    @field_validator('collector_ssh_username', 'collector_ssh_password', 'collector_ssh_key_path', mode='before')
+    @field_validator(
+        'collector_ssh_username',
+        'collector_ssh_password',
+        'collector_ssh_key_path',
+        'smtp_host',
+        'smtp_username',
+        'smtp_password',
+        'smtp_from_email',
+        mode='before',
+    )
     @classmethod
     def normalize_optional_strings(cls, value: str | None) -> str | None:
         if value is None:
