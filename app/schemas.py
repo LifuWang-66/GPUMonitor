@@ -54,10 +54,20 @@ class GpuSummaryResponse(BaseModel):
     trend: list[TrendPoint]
 
 
-class UserSummaryResponse(BaseModel):
-    username: str
+class UserServerBreakdown(BaseModel):
     host_name: str
     host_address: str
     gpu_hours: float
     non_idle_hours: float
     average_gpu_utilization: float
+
+
+class UserSummaryResponse(BaseModel):
+    username: str
+    host_names: list[str]
+    host_addresses: list[str]
+    gpu_hours: float
+    non_idle_hours: float
+    average_gpu_utilization: float
+    daily_average_gpu_hours: float
+    server_breakdown: list[UserServerBreakdown]

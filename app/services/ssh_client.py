@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import shlex
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -83,16 +82,6 @@ def _connect(host: str, credentials: SshCredentials) -> paramiko.SSHClient:
     if credentials.key_path:
         connection_kwargs['key_filename'] = credentials.key_path
     client.connect(**connection_kwargs)
-    client.connect(
-        hostname=host,
-        port=settings.collector_ssh_port,
-        username=credentials.username,
-        password=credentials.password,
-        key_filename=credentials.key_path,
-        allow_agent=credentials.use_agent,
-        look_for_keys=credentials.use_agent,
-        timeout=settings.ssh_connect_timeout_seconds,
-    )
     return client
 
 

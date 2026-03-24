@@ -19,6 +19,35 @@ function metricRow(label, value, progress = null) {
   return wrapper;
 }
 
+function groupByHost(items) {
+  return items.reduce((acc, item) => {
+    const key = `${item.host_address}`;
+    if (!acc[key]) {
+      acc[key] = {
+        hostName: item.host_name,
+        hostAddress: item.host_address,
+        items: [],
+      };
+    }
+    acc[key].items.push(item);
+    return acc;
+  }, {});
+}
+
+function mbToGb(mb) {
+  return (mb / 1024).toFixed(1);
+}
+
+function getHostSummary(cards) {
+  const totalCards = cards.length;
+  const busyCards = cards.filter(card => card.process_count > 0).length;
+  const models = [...new Set(cards.map(card => card.gpu_name))];
+  const modelLabel = models.length === 1 ? models[0] : `Mixed (${models.length})`;
+  const memoryTotals = [...new Set(cards.map(card => card.memory_total_mb))];
+  const memoryLabel = memoryTotals.length === 1 ? `${mbToGb(memoryTotals[0])} GB/卡` : '多规格';
+  return { totalCards, busyCards, modelLabel, memoryLabel };
+}
+
 function renderSummary(cards) {
   statusSummary.innerHTML = '';
   const total = cards.length;
@@ -39,115 +68,86 @@ function renderSummary(cards) {
   }
 }
 
+function createServerSection(hostName, hostAddress, cards, { collapsible = true } = {}) {
+  const section = document.createElement('section');
+  section.className = 'server-section';
+
+  const summary = getHostSummary(cards);
+  const content = `
+    <div class="server-section-head">
+      <div>
+        <div class="server-title-row">
+          <span class="server-chip">SERVER</span>
+          <h3>${hostName}</h3>
+        </div>
+        <p class="muted">${hostAddress}</p>
+      </div>
+      <div class="server-summary-list">
+        <span class="server-summary-badge">型号：${summary.modelLabel}</span>
+        <span class="server-summary-badge">显存：${summary.memoryLabel}</span>
+        <span class="server-summary-badge">总卡：${summary.totalCards}</span>
+        <span class="server-summary-badge">占用：${summary.busyCards}</span>
+      </div>
+    </div>
+    <div class="server-card-grid"></div>
+  `;
+
+  if (collapsible) {
+    section.innerHTML = `
+      <details class="server-details" open>
+        <summary class="server-summary">${hostName} · ${hostAddress}</summary>
+        <div class="server-body">${content}</div>
+      </details>
+    `;
+  } else {
+    section.innerHTML = content;
+  }
+
+  return section;
+}
+
 function renderCurrent(cards) {
   currentGrid.innerHTML = '';
   if (!cards.length) {
-    currentGrid.textContent = '暂无数据。请先验证连接并运行采集器。';
+    currentGrid.textContent = '暂无数据。请先验证连接，并等待自动采集或手动刷新当前状态。';
     currentGrid.classList.add('empty-state');
     return;
   }
-
   currentGrid.classList.remove('empty-state');
   renderSummary(cards);
-
-  const gpuTemplate = document.getElementById('gpu-card-template');
-  const serverTemplate = document.getElementById('server-group-template');
-
-  const grouped = new Map();
-  for (const card of cards) {
-    const key = `${card.host_name}|||${card.host_address}`;
-    if (!grouped.has(key)) {
-      grouped.set(key, []);
-    }
-    grouped.get(key).push(card);
-  }
-
-  for (const [key, serverCards] of grouped.entries()) {
-    const [hostName, hostAddress] = key.split('|||');
-    const serverNode = serverTemplate.content.cloneNode(true);
-
-    serverNode.querySelector('.server-group-title').textContent = hostName;
-    serverNode.querySelector('.server-group-subtitle').textContent = hostAddress;
-
-    const serverGrid = serverNode.querySelector('.server-group-grid');
-
-    serverCards.sort((a, b) => a.gpu_index - b.gpu_index);
-
-    for (const card of serverCards) {
-      const node = gpuTemplate.content.cloneNode(true);
+  const template = document.getElementById('gpu-card-template');
+  const grouped = groupByHost(cards);
+  for (const group of Object.values(grouped)) {
+    const section = createServerSection(group.hostName, group.hostAddress, group.items, { collapsible: true });
+    const grid = section.querySelector('.server-card-grid');
+    for (const card of group.items.sort((a, b) => a.gpu_index - b.gpu_index)) {
+      const node = template.content.cloneNode(true);
       node.querySelector('h3').textContent = `GPU ${card.gpu_index}`;
-      node.querySelector('.muted').textContent = card.gpu_name;
-
-      const badge = node.querySelector('.badge');
-      badge.textContent = card.process_count > 0 ? '占用中' : '无进程';
-      badge.classList.add(card.is_idle ? 'idle' : 'busy');
-
+      node.querySelector('.muted').textContent = `${card.gpu_name}`;
       const metrics = node.querySelector('.metrics');
       metrics.appendChild(metricRow('GPU util', `${card.utilization_gpu.toFixed(1)}%`, card.utilization_gpu));
-
-      const memoryPercent = card.memory_total_mb
-        ? (card.memory_used_mb / card.memory_total_mb) * 100
-        : 0;
-      metrics.appendChild(
-        metricRow(
-          '显存',
-          `${card.memory_used_mb.toFixed(0)} / ${card.memory_total_mb.toFixed(0)} MB`,
-          memoryPercent
-        )
-      );
-
-      metrics.appendChild(
-        metricRow('活动用户', card.active_users.length ? card.active_users.join(', ') : '无人')
-      );
-      metrics.appendChild(metricRow('进程数', String(card.process_count)));
-      metrics.appendChild(
-        metricRow('更新时间', new Date(card.last_seen_at).toLocaleString('zh-CN'))
-      );
-
-      serverGrid.appendChild(node);
+      const memoryPercent = card.memory_total_mb ? (card.memory_used_mb / card.memory_total_mb) * 100 : 0;
+      metrics.appendChild(metricRow('显存', `${card.memory_used_mb.toFixed(0)} / ${card.memory_total_mb.toFixed(0)} MB`, memoryPercent));
+      metrics.appendChild(metricRow('活动用户', card.active_users.length ? card.active_users.join(', ') : '无人'));
+      grid.appendChild(node);
     }
-
-    currentGrid.appendChild(serverNode);
+    currentGrid.appendChild(section);
   }
 }
 
 function renderGpuHistory(items) {
   gpuHistoryGrid.innerHTML = '';
   if (!items.length) {
-    gpuHistoryGrid.textContent = '暂无历史聚合数据。先运行一次采集器，等待形成日聚合后这里会展示结果。';
+    gpuHistoryGrid.textContent = '暂无历史聚合数据。先运行自动采集，等待形成日聚合后这里会展示结果。';
     gpuHistoryGrid.classList.add('empty-state');
     return;
   }
-
   gpuHistoryGrid.classList.remove('empty-state');
-
-  const serverTemplate = document.getElementById('server-group-template');
-  if (!serverTemplate) {
-    gpuHistoryGrid.textContent = '页面模板缺失，请刷新页面或重启服务。';
-    gpuHistoryGrid.classList.add('empty-state');
-    return;
-  }
-
-  const grouped = new Map();
-  for (const item of items) {
-    const key = `${item.host_name}|||${item.host_address}`;
-    if (!grouped.has(key)) {
-      grouped.set(key, []);
-    }
-    grouped.get(key).push(item);
-  }
-
-  for (const [key, serverItems] of grouped.entries()) {
-    const [hostName, hostAddress] = key.split('|||');
-    const serverNode = serverTemplate.content.cloneNode(true);
-
-    serverNode.querySelector('.server-group-title').textContent = hostName;
-    serverNode.querySelector('.server-group-subtitle').textContent = hostAddress;
-
-    const serverGrid = serverNode.querySelector('.server-group-grid');
-    serverItems.sort((a, b) => a.gpu_index - b.gpu_index);
-
-    for (const item of serverItems) {
+  const grouped = groupByHost(items);
+  for (const group of Object.values(grouped)) {
+    const section = createServerSection(group.hostName, group.hostAddress, group.items, { collapsible: true });
+    const grid = section.querySelector('.server-card-grid');
+    for (const item of group.items.sort((a, b) => a.gpu_index - b.gpu_index)) {
       const card = document.createElement('article');
       card.className = 'history-card';
       card.innerHTML = `
@@ -160,11 +160,9 @@ function renderGpuHistory(items) {
           <li><span>平均显存</span><strong>${item.average_memory_used_mb} MB</strong></li>
         </ul>
       `;
-
-      serverGrid.appendChild(card);
+      grid.appendChild(card);
     }
-
-    gpuHistoryGrid.appendChild(serverNode);
+    gpuHistoryGrid.appendChild(section);
   }
 }
 
@@ -176,33 +174,58 @@ function renderUsers(items) {
     return;
   }
   userTableWrapper.classList.remove('empty-state');
-  const table = document.createElement('table');
-  table.className = 'table';
-  table.innerHTML = `
-    <thead>
-      <tr>
-        <th>用户</th>
-        <th>服务器</th>
-        <th>GPU 使用时长</th>
-        <th>非空闲时长</th>
-        <th>平均 util</th>
-      </tr>
-    </thead>
-    <tbody></tbody>
-  `;
-  const tbody = table.querySelector('tbody');
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'user-list';
+
   for (const item of items) {
-    const row = document.createElement('tr');
-    row.innerHTML = `
-      <td>${item.username}</td>
-      <td>${item.host_name} · ${item.host_address}</td>
-      <td>${item.gpu_hours} 小时</td>
-      <td>${item.non_idle_hours} 小时</td>
-      <td>${item.average_gpu_utilization}%</td>
+    const block = document.createElement('article');
+    block.className = 'user-card';
+    block.innerHTML = `
+      <div class="user-card-head">
+        <div>
+          <h3>${item.username}</h3>
+          <p class="muted">涉及服务器：${item.host_names.join(', ')}</p>
+        </div>
+        <div class="user-summary-list">
+          <span class="server-summary-badge">总时长：${item.gpu_hours} 小时</span>
+          <span class="server-summary-badge">日均：${item.daily_average_gpu_hours} 小时</span>
+          <span class="server-summary-badge">非空闲：${item.non_idle_hours} 小时</span>
+          <span class="server-summary-badge">平均 util：${item.average_gpu_utilization}%</span>
+        </div>
+      </div>
+      <details class="user-details">
+        <summary>查看各服务器详情</summary>
+        <table class="table compact-table">
+          <thead>
+            <tr>
+              <th>服务器</th>
+              <th>GPU 使用时长</th>
+              <th>非空闲时长</th>
+              <th>平均 util</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${item.server_breakdown
+              .map(
+                server => `
+                  <tr>
+                    <td>${server.host_name}<div class="table-subtext">${server.host_address}</div></td>
+                    <td>${server.gpu_hours} 小时</td>
+                    <td>${server.non_idle_hours} 小时</td>
+                    <td>${server.average_gpu_utilization}%</td>
+                  </tr>
+                `
+              )
+              .join('')}
+          </tbody>
+        </table>
+      </details>
     `;
-    tbody.appendChild(row);
+    wrapper.appendChild(block);
   }
-  userTableWrapper.appendChild(table);
+
+  userTableWrapper.appendChild(wrapper);
 }
 
 async function fetchJson(url, options = {}) {
@@ -232,8 +255,11 @@ async function refreshAll() {
 refreshButton?.addEventListener('click', async () => {
   refreshButton.disabled = true;
   try {
-    await fetchJson('/api/collector/run', { method: 'POST' });
-    await refreshAll();
+    const response = await fetchJson('/api/status/refresh', { method: 'POST' });
+    renderCurrent(response.current_status || []);
+    if (response.errors?.length) {
+      alert(`部分服务器刷新失败：\n${response.errors.join('\n')}`);
+    }
   } catch (error) {
     alert(`刷新失败：${error.message}`);
   } finally {
