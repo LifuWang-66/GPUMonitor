@@ -77,18 +77,22 @@ def home(request: Request):
 
 @app.post('/api/session/access', response_model=list[HostAccessResult])
 def create_access_session(payload: CredentialCheckRequest, request: Request, db: Session = Depends(get_db)):
-    profile = db.scalar(select(UserProfile).where(UserProfile.username == payload.username))
+    normalized_username = payload.username.strip()
+    profile = db.scalar(select(UserProfile).where(UserProfile.username == normalized_username))
     input_email = (payload.email or '').strip() or None
+    profile_email = (profile.email or '').strip() if profile else ''
     if profile is None:
         if not input_email:
             raise HTTPException(status_code=400, detail='Email is required the first time this user logs in.')
-        profile = UserProfile(username=payload.username, email=input_email)
+        profile = UserProfile(username=normalized_username, email=input_email)
         db.add(profile)
-    elif input_email and input_email != profile.email:
+    elif not profile_email and not input_email:
+        raise HTTPException(status_code=400, detail='Email is required because this user does not have an email on file.')
+    elif input_email and input_email != profile_email:
         profile.email = input_email
     db.commit()
 
-    credentials = SshCredentials(username=payload.username, password=payload.password, use_agent=payload.use_agent)
+    credentials = SshCredentials(username=normalized_username, password=payload.password, use_agent=payload.use_agent)
     results: list[HostAccessResult] = []
     accessible_hosts: list[str] = []
     for host in settings.hosts:
@@ -98,7 +102,7 @@ def create_access_session(payload: CredentialCheckRequest, request: Request, db:
         results.append(HostAccessResult(name=host['name'], address=host['address'], accessible=accessible, reason=reason))
     if not accessible_hosts:
         raise HTTPException(status_code=400, detail='当前凭据无法访问任何 GPU 服务器。')
-    request.session['username'] = payload.username
+    request.session['username'] = normalized_username
     request.session['email'] = profile.email
     request.session['accessible_hosts'] = accessible_hosts
     return results
