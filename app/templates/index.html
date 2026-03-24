@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{ app_name }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}" />
+  </head>
+  <body>
+    <header class="page-header">
+      <div>
+        <p class="eyebrow">GPU Monitor</p>
+        <h1>{{ app_name }}</h1>
+      </div>
+      <div class="header-actions">
+        {% if session_username %}
+        <div class="session-card">
+          <span>Current user: {{ session_username }}</span>
+          <span>Accessible hosts: {{ accessible_hosts | length }}</span>
+          <button id="logout-button" class="secondary">Sign out</button>
+        </div>
+        {% endif %}
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel auth-panel">
+        <h2>Access Check</h2>
+        <p>Enter your own Linux account. The system will SSH into 5 GPU servers to verify which hosts you can access, and only show data from those hosts.</p>
+        <form id="access-form" method="post" action="/session/access">
+          <label>
+            Username
+            <input name="username" required placeholder="e.g. jinyang" value="{{ session_username or '' }}" />
+          </label>
+          <label>
+            Email
+            <input name="email" type="email" placeholder="Required on first login; optional later to keep current email" value="{{ session_email or '' }}" />
+          </label>
+          <label>
+            Password
+            <input name="password" type="password" placeholder="Leave empty if SSH key is already configured" />
+          </label>
+          <label class="checkbox-row">
+            <input name="use_agent" type="checkbox" value="true" />
+            Prefer host machine SSH key / agent
+          </label>
+          <button type="submit">Validate and enter dashboard</button>
+        </form>
+        <div class="host-tags">
+          {% for host in host_aliases %}
+          <span>{{ host.name }} · {{ host.address }}</span>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section class="panel overview-panel">
+        <div class="section-title-row">
+          <div>
+            <h2>Current Status</h2>
+            <p class="muted section-note">Hosts are shown as collapsible groups. Summary includes model, memory, total cards, and busy cards.</p>
+          </div>
+          <button id="refresh-button" class="secondary">Refresh current status</button>
+        </div>
+        <div id="status-summary" class="stat-grid"></div>
+        <div id="current-gpu-grid" class="server-stack empty-state">Please complete access validation first.</div>
+      </section>
+
+      <section class="panel history-panel">
+        <div class="section-title-row">
+          <div>
+            <h2>History</h2>
+            <p class="muted section-note">View host-level GPU history in collapsible groups.</p>
+          </div>
+          <div>
+            <label>
+              Time range
+              <select id="window-select">
+                {% for window in history_windows %}
+                <option value="{{ window }}" {% if window == 30 %}selected{% endif %}>{{ window }} days</option>
+                {% endfor %}
+              </select>
+            </label>
+          </div>
+        </div>
+        <div id="gpu-history-grid" class="server-stack empty-state">After login, GPU history for 7/14/20/30 days will load automatically.</div>
+      </section>
+
+      <section class="panel users-panel">
+        <div class="section-title-row">
+          <div>
+            <h2>User GPU Usage</h2>
+            <p class="muted section-note">By default, only the current user is shown. lifu and panzhou can view all users. Expand to see per-host details.</p>
+          </div>
+        </div>
+        <div id="user-table-wrapper" class="empty-state">User aggregates you are allowed to view will appear after login.</div>
+      </section>
+    </main>
+
+    <template id="gpu-card-template">
+      <article class="gpu-card">
+        <div class="gpu-card-head">
+          <div>
+            <h3></h3>
+            <p class="muted"></p>
+          </div>
+        </div>
+        <div class="metrics"></div>
+      </article>
+    </template>
+
+    <script>
+      window.GPU_MONITOR_BOOTSTRAP = {
+        sessionUsername: {{ (session_username or '') | tojson }},
+        accessibleHosts: {{ accessible_hosts | tojson }},
+      };
+    </script>
+    <script src="{{ url_for('static', path='/app.js') }}"></script>
+  </body>
+</html>
