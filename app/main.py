@@ -183,7 +183,7 @@ def api_user_history(request: Request, days: int = 30, allowed_hosts: list[str] 
     if days not in settings.allowed_history_windows:
         raise HTTPException(status_code=400, detail='不支持的时间窗口。')
     return get_user_history(db, allowed_hosts, days, viewer_username=request.session.get('username', ''))
-
+https://github.com/LifuWang-66/GPUMonitor/pull/24/conflict?name=app%252Fstatic%252Fstyles.css&base_oid=331501110b733810cbb17c2412c7eb1481d480b6&head_oid=9c7f8756e333bd2ffc1849fa4ce0230c23ae4051
 
 @app.post('/api/collector/run')
 def api_run_collector(db: Session = Depends(get_db)):
