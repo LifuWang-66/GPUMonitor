@@ -71,8 +71,7 @@ class GpuSummaryResponse(BaseModel):
 
 
 class UserServerBreakdown(BaseModel):
-    host_name: str
-    host_address: str
+    gpu_type: str
     gpu_hours: float
     non_idle_hours: float
     average_gpu_utilization: float
@@ -81,7 +80,6 @@ class UserServerBreakdown(BaseModel):
 
 class UserSummaryResponse(BaseModel):
     username: str
-    gpu_type: str
     host_names: list[str]
     host_addresses: list[str]
     gpu_hours: float

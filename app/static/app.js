@@ -262,8 +262,8 @@ function renderUsers(items) {
     block.innerHTML = `
       <div class="user-card-head">
         <div>
-          <h3>${item.gpu_type}</h3>
-          <p class="muted">User: ${item.username} · Hosts: ${item.host_names.join(', ')}</p>
+          <h3>${item.username}</h3>
+          <p class="muted">GPU types: ${item.server_breakdown.map(server => server.gpu_type).join(', ')}</p>
         </div>
         <div class="user-summary-list">
           <span class="server-summary-badge">Total: ${item.gpu_hours} h</span>
@@ -277,7 +277,7 @@ function renderUsers(items) {
         <table class="table compact-table">
           <thead>
             <tr>
-              <th>Host</th>
+              <th>GPU type</th>
               <th>GPU hours</th>
               <th>Daily avg hours</th>
               <th>Non-idle hours</th>
@@ -289,7 +289,7 @@ function renderUsers(items) {
               .map(
                 server => `
                   <tr>
-                    <td>${server.host_name}<div class="table-subtext">${server.host_address}</div></td>
+                    <td>${server.gpu_type}</td>
                     <td>${server.gpu_hours} h</td>
                     <td>${server.daily_average_gpu_hours} h</td>
                     <td>${server.non_idle_hours} h</td>

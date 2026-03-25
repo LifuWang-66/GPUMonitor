@@ -130,10 +130,8 @@ def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_us
     is_admin = viewer_username in ADMIN_USERNAMES
     host_gpu_type_map = _get_host_gpu_type_map(db, allowed_hosts)
 
-    grouped: dict[tuple[str, str], dict] = defaultdict(
+    grouped: dict[str, dict] = defaultdict(
         lambda: {
-            'username': '',
-            'gpu_type': 'Unknown model',
             'host_names': [],
             'host_addresses': [],
             'active_days': set(),
@@ -142,8 +140,7 @@ def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_us
             'total_utilization': 0.0,
             'server_breakdown': defaultdict(
                 lambda: {
-                    'host_name': '',
-                    'host_address': '',
+                    'gpu_type': 'Unknown model',
                     'active_days': set(),
                     'gpu_samples': 0,
                     'non_idle_samples': 0,
@@ -158,9 +155,7 @@ def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_us
             continue
 
         gpu_type = host_gpu_type_map.get(host.address, 'Unknown model')
-        bucket = grouped[(daily.username, gpu_type)]
-        bucket['username'] = daily.username
-        bucket['gpu_type'] = gpu_type
+        bucket = grouped[daily.username]
         if host.name not in bucket['host_names']:
             bucket['host_names'].append(host.name)
         if host.address not in bucket['host_addresses']:
@@ -175,20 +170,18 @@ def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_us
         bucket['total_utilization'] += total_utilization
         bucket['active_days'].add(daily.date)
 
-        server_item = bucket['server_breakdown'][host.address]
-        server_item['host_name'] = host.name
-        server_item['host_address'] = host.address
+        server_item = bucket['server_breakdown'][gpu_type]
+        server_item['gpu_type'] = gpu_type
         server_item['gpu_samples'] += gpu_samples
         server_item['non_idle_samples'] += non_idle_samples
         server_item['total_utilization'] += total_utilization
         server_item['active_days'].add(daily.date)
 
     results: list[UserSummaryResponse] = []
-    for _, item in sorted(grouped.items(), key=lambda entry: (-entry[1]['gpu_samples'], entry[0][0], entry[0][1])):
+    for username, item in sorted(grouped.items(), key=lambda entry: (-entry[1]['gpu_samples'], entry[0])):
         server_breakdown = [
             UserServerBreakdown(
-                host_name=server['host_name'],
-                host_address=server['host_address'],
+                gpu_type=server['gpu_type'],
                 gpu_hours=round(server['gpu_samples'] * sample_hours, 2),
                 non_idle_hours=round(server['non_idle_samples'] * sample_hours, 2),
                 average_gpu_utilization=round(server['total_utilization'] / (server['gpu_samples'] or 1), 2),
@@ -200,8 +193,7 @@ def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_us
         active_day_count = max(len(item['active_days']), 1)
         results.append(
             UserSummaryResponse(
-                username=item['username'],
-                gpu_type=item['gpu_type'],
+                username=username,
                 host_names=sorted(item['host_names']),
                 host_addresses=sorted(item['host_addresses']),
                 gpu_hours=total_gpu_hours,
