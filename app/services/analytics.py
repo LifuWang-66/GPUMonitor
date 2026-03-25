@@ -128,9 +128,12 @@ def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_us
 
     sample_hours = settings.collector_interval_minutes / 60
     is_admin = viewer_username in ADMIN_USERNAMES
+    host_gpu_type_map = _get_host_gpu_type_map(db, allowed_hosts)
 
-    grouped: dict[str, dict] = defaultdict(
+    grouped: dict[tuple[str, str], dict] = defaultdict(
         lambda: {
+            'username': '',
+            'gpu_type': 'Unknown model',
             'host_names': [],
             'host_addresses': [],
             'active_days': set(),
@@ -154,7 +157,10 @@ def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_us
         if not is_admin and daily.username != viewer_username:
             continue
 
-        bucket = grouped[daily.username]
+        gpu_type = host_gpu_type_map.get(host.address, 'Unknown model')
+        bucket = grouped[(daily.username, gpu_type)]
+        bucket['username'] = daily.username
+        bucket['gpu_type'] = gpu_type
         if host.name not in bucket['host_names']:
             bucket['host_names'].append(host.name)
         if host.address not in bucket['host_addresses']:
@@ -178,7 +184,7 @@ def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_us
         server_item['active_days'].add(daily.date)
 
     results: list[UserSummaryResponse] = []
-    for username, item in sorted(grouped.items(), key=lambda entry: (-entry[1]['gpu_samples'], entry[0])):
+    for _, item in sorted(grouped.items(), key=lambda entry: (-entry[1]['gpu_samples'], entry[0][0], entry[0][1])):
         server_breakdown = [
             UserServerBreakdown(
                 host_name=server['host_name'],
@@ -194,7 +200,8 @@ def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_us
         active_day_count = max(len(item['active_days']), 1)
         results.append(
             UserSummaryResponse(
-                username=username,
+                username=item['username'],
+                gpu_type=item['gpu_type'],
                 host_names=sorted(item['host_names']),
                 host_addresses=sorted(item['host_addresses']),
                 gpu_hours=total_gpu_hours,
@@ -205,3 +212,27 @@ def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_us
             )
         )
     return results
+
+
+def _get_host_gpu_type_map(db: Session, allowed_hosts: list[str]) -> dict[str, str]:
+    rows = db.execute(
+        select(CurrentGpuStatus.gpu_name, Host.address)
+        .join(Host, CurrentGpuStatus.host_id == Host.id)
+        .where(Host.address.in_(allowed_hosts))
+        .order_by(Host.address, CurrentGpuStatus.gpu_index)
+    ).all()
+    host_gpu_type_map: dict[str, str] = {}
+    for gpu_name, address in rows:
+        if address in host_gpu_type_map:
+            continue
+        host_gpu_type_map[address] = _normalize_gpu_type(gpu_name)
+    return host_gpu_type_map
+
+
+def _normalize_gpu_type(gpu_name: str) -> str:
+    upper = (gpu_name or '').upper()
+    if 'L40S' in upper:
+        return 'NVIDIA L40S'
+    if 'RTX PRO 6000' in upper:
+        return 'NVIDIA RTX Pro 6000'
+    return gpu_name or 'Unknown model'

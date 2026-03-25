@@ -262,8 +262,8 @@ function renderUsers(items) {
     block.innerHTML = `
       <div class="user-card-head">
         <div>
-          <h3>${item.username}</h3>
-          <p class="muted">Hosts: ${item.host_names.join(', ')}</p>
+          <h3>${item.gpu_type}</h3>
+          <p class="muted">User: ${item.username} · Hosts: ${item.host_names.join(', ')}</p>
         </div>
         <div class="user-summary-list">
           <span class="server-summary-badge">Total: ${item.gpu_hours} h</span>

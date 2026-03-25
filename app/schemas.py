@@ -81,6 +81,7 @@ class UserServerBreakdown(BaseModel):
 
 class UserSummaryResponse(BaseModel):
     username: str
+    gpu_type: str
     host_names: list[str]
     host_addresses: list[str]
     gpu_hours: float
