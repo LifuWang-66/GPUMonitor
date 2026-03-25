@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import CurrentGpuStatus, DailyGpuAggregate, DailyUserAggregate, Host
 from app.schemas import CurrentGpuResponse, GpuSummaryResponse, TrendPoint, UserServerBreakdown, UserSummaryResponse
-from app.services.ssh_client import HostSnapshot, SshCredentials, collect_host_snapshot
+from app.services.ssh_client import HostSnapshot
 
 settings = get_settings()
 ADMIN_USERNAMES = {'lifu', 'panzhou'}
@@ -129,6 +129,7 @@ def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_us
     sample_hours = settings.collector_interval_minutes / 60
     is_admin = viewer_username in ADMIN_USERNAMES
     host_gpu_type_map = _get_host_gpu_type_map(db, allowed_hosts)
+    gpu_type_by_host_day, latest_gpu_type_by_host = _get_gpu_type_from_daily_aggregates(db, allowed_hosts, since)
 
     grouped: dict[str, dict] = defaultdict(
         lambda: {
@@ -154,7 +155,11 @@ def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_us
         if not is_admin and daily.username != viewer_username:
             continue
 
-        gpu_type = host_gpu_type_map.get(host.address, 'Unknown model')
+        gpu_type = (
+            gpu_type_by_host_day.get((daily.host_id, daily.date))
+            or latest_gpu_type_by_host.get(daily.host_id)
+            or host_gpu_type_map.get(host.address, 'Unknown model')
+        )
         bucket = grouped[daily.username]
         if host.name not in bucket['host_names']:
             bucket['host_names'].append(host.name)
@@ -230,11 +235,6 @@ def _get_host_gpu_type_map(db: Session, allowed_hosts: list[str]) -> dict[str, s
             continue
         host_gpu_type_map[address] = _normalize_gpu_type(gpu_name)
 
-    unresolved_hosts = [address for address in allowed_hosts if address not in host_gpu_type_map]
-    if unresolved_hosts and settings.collector_ssh_username:
-        live_gpu_type_map = _get_live_gpu_type_map(unresolved_hosts)
-        host_gpu_type_map.update(live_gpu_type_map)
-
     for address in allowed_hosts:
         host_gpu_type_map.setdefault(address, 'Unknown model')
     return host_gpu_type_map
@@ -249,21 +249,21 @@ def _normalize_gpu_type(gpu_name: str) -> str:
     return gpu_name or 'Unknown model'
 
 
-def _get_live_gpu_type_map(host_addresses: list[str]) -> dict[str, str]:
-    credentials = SshCredentials(
-        username=settings.collector_ssh_username or '',
-        password=settings.collector_ssh_password,
-        key_path=settings.collector_ssh_key_path,
-        use_agent=bool(settings.collector_ssh_key_path and not settings.collector_ssh_password),
-    )
-    address_to_name = {item['address']: item['name'] for item in settings.hosts}
-    live_map: dict[str, str] = {}
-    for address in host_addresses:
-        host_name = address_to_name.get(address, address)
-        try:
-            snapshot = collect_host_snapshot(host_name, address, credentials)
-            if snapshot.gpu_records:
-                live_map[address] = _normalize_gpu_type(snapshot.gpu_records[0].gpu_name)
-        except Exception:  # noqa: BLE001
-            continue
-    return live_map
+def _get_gpu_type_from_daily_aggregates(
+    db: Session,
+    allowed_hosts: list[str],
+    since_date: date,
+) -> tuple[dict[tuple[int, date], str], dict[int, str]]:
+    rows = db.execute(
+        select(DailyGpuAggregate.host_id, DailyGpuAggregate.date, DailyGpuAggregate.gpu_name)
+        .join(Host, DailyGpuAggregate.host_id == Host.id)
+        .where(Host.address.in_(allowed_hosts), DailyGpuAggregate.date >= since_date)
+        .order_by(DailyGpuAggregate.date.desc(), DailyGpuAggregate.host_id, DailyGpuAggregate.gpu_index)
+    ).all()
+    by_host_day: dict[tuple[int, date], str] = {}
+    latest_by_host: dict[int, str] = {}
+    for host_id, day, gpu_name in rows:
+        normalized = _normalize_gpu_type(gpu_name)
+        by_host_day.setdefault((host_id, day), normalized)
+        latest_by_host.setdefault(host_id, normalized)
+    return by_host_day, latest_by_host
