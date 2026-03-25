@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -19,6 +20,7 @@ STORAGE_THRESHOLD_BYTES = int(1.5 * 1024 * 1024 * 1024 * 1024)
 LOW_UTIL_THRESHOLD = 40.0
 MID_UTIL_THRESHOLD = 70.0
 EIGHT_HOURS = timedelta(hours=8)
+RUN_COLLECTION_LOCK = threading.Lock()
 
 
 def get_collector_credentials() -> SshCredentials | None:
@@ -29,25 +31,6 @@ def get_collector_credentials() -> SshCredentials | None:
         password=settings.collector_ssh_password,
         key_path=settings.collector_ssh_key_path,
         use_agent=bool(settings.collector_ssh_key_path and not settings.collector_ssh_password),
-    )
-
-
-def repair_null_aggregates(db: Session) -> None:
-    db.execute(
-        update(DailyGpuAggregate).values(
-            samples=func.coalesce(DailyGpuAggregate.samples, 0),
-            busy_samples=func.coalesce(DailyGpuAggregate.busy_samples, 0),
-            non_idle_samples=func.coalesce(DailyGpuAggregate.non_idle_samples, 0),
-            total_utilization=func.coalesce(DailyGpuAggregate.total_utilization, 0),
-            total_memory_used_mb=func.coalesce(DailyGpuAggregate.total_memory_used_mb, 0),
-        )
-    )
-    db.execute(
-        update(DailyUserAggregate).values(
-            gpu_samples=func.coalesce(DailyUserAggregate.gpu_samples, 0),
-            non_idle_samples=func.coalesce(DailyUserAggregate.non_idle_samples, 0),
-            total_utilization=func.coalesce(DailyUserAggregate.total_utilization, 0),
-        )
     )
 
 
@@ -86,26 +69,28 @@ def collect_live_current_status(allowed_hosts: list[str]) -> tuple[list[CurrentG
 
 
 def run_collection(db: Session) -> list[str]:
+    if not RUN_COLLECTION_LOCK.acquire(blocking=False):
+        return ['Collector skipped: another collection run is already in progress.']
     credentials = get_collector_credentials()
-    if credentials is None:
-        return ['Collector skipped: missing COLLECTOR_SSH_USERNAME configuration.']
+    try:
+        if credentials is None:
+            return ['Collector skipped: missing COLLECTOR_SSH_USERNAME configuration.']
 
-    repair_null_aggregates(db)
-    db.commit()
-
-    messages: list[str] = []
-    hosts = ensure_hosts(db)
-    for host in hosts:
-        try:
-            snapshot = collect_host_snapshot(host.name, host.address, credentials)
-            upsert_snapshot(db, host, snapshot)
-            _evaluate_and_handle_user_alerts(db, host, snapshot, credentials)
-            messages.append(f'Collected {host.address}')
-        except Exception as exc:  # noqa: BLE001
-            messages.append(f'Failed {host.address}: {exc}')
-    cleanup_old_data(db)
-    db.commit()
-    return messages
+        messages: list[str] = []
+        hosts = ensure_hosts(db)
+        for host in hosts:
+            try:
+                snapshot = collect_host_snapshot(host.name, host.address, credentials)
+                upsert_snapshot(db, host, snapshot)
+                _evaluate_and_handle_user_alerts(db, host, snapshot, credentials)
+                messages.append(f'Collected {host.address}')
+            except Exception as exc:  # noqa: BLE001
+                messages.append(f'Failed {host.address}: {exc}')
+        cleanup_old_data(db)
+        db.commit()
+        return messages
+    finally:
+        RUN_COLLECTION_LOCK.release()
 
 
 def upsert_snapshot(db: Session, host: Host, snapshot: HostSnapshot) -> None:
