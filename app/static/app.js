@@ -154,20 +154,16 @@ function buildGpuCardNode(card) {
     const fallback = document.createElement('article');
     fallback.className = 'gpu-card';
     fallback.innerHTML = `
-      <div class="gpu-card-head">
-        <div>
-          <h3></h3>
-          <p class="muted"></p>
-        </div>
+      <div class="gpu-card-index"></div>
+      <div class="gpu-card-content">
+        <div class="metrics"></div>
       </div>
-      <div class="metrics"></div>
     `;
     node = document.createDocumentFragment();
     node.appendChild(fallback);
   }
 
-  node.querySelector('h3').textContent = `GPU ${card.gpu_index}`;
-  node.querySelector('.muted').textContent = `${card.gpu_name}`;
+  node.querySelector('.gpu-card-index').textContent = `GPU ${card.gpu_index}`;
   const metrics = node.querySelector('.metrics');
   metrics.appendChild(metricRow('GPU util', `${card.utilization_gpu.toFixed(1)}%`, card.utilization_gpu));
   const memoryPercent = card.memory_total_mb ? (card.memory_used_mb / card.memory_total_mb) * 100 : 0;
@@ -228,20 +224,18 @@ function renderGpuHistory(items) {
     `;
     const grid = section.querySelector('.server-card-grid');
     for (const item of group.items.sort((a, b) => a.gpu_index - b.gpu_index)) {
-      const model = normalizeGpuModel(item.gpu_name);
-      const officialMemory = officialMemoryByModel(model);
-      const memoryText = officialMemory ? `${officialMemory} GB` : '--';
       const card = document.createElement('article');
       card.className = 'history-card';
       card.innerHTML = `
-        <h3>GPU ${item.gpu_index}</h3>
-        <p class="muted">Model: ${model} · Memory: ${memoryText}</p>
-        <ul>
-          <li><span>Occupancy</span><strong>${item.occupancy_rate}%</strong></li>
-          <li><span>Effective utilization</span><strong>${item.effective_utilization_rate}%</strong></li>
-          <li><span>Avg GPU util</span><strong>${item.average_gpu_utilization}%</strong></li>
-          <li><span>Avg memory</span><strong>${item.average_memory_used_mb} MB</strong></li>
-        </ul>
+        <div class="gpu-card-index">GPU ${item.gpu_index}</div>
+        <div class="gpu-card-content">
+          <ul>
+            <li><span>Occupancy</span><strong>${item.occupancy_rate}%</strong></li>
+            <li><span>Effective utilization</span><strong>${item.effective_utilization_rate}%</strong></li>
+            <li><span>Avg GPU util</span><strong>${item.average_gpu_utilization}%</strong></li>
+            <li><span>Avg memory</span><strong>${item.average_memory_used_mb} MB</strong></li>
+          </ul>
+        </div>
       `;
       grid.appendChild(card);
     }

@@ -168,11 +168,28 @@ button.secondary {
   gap: 12px;
   margin-top: 12px;
 }
-.gpu-card-head {
+.gpu-card,
+.history-card {
   display: flex;
-  justify-content: space-between;
   gap: 12px;
+  align-items: stretch;
+}
+.gpu-card-index {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  border-right: 1px solid var(--border);
+  padding: 4px 8px 4px 2px;
+  display: inline-flex;
   align-items: center;
+  justify-content: center;
+  min-width: 28px;
+}
+.gpu-card-content {
+  flex: 1;
+  min-width: 0;
 }
 .metric-row {
   display: flex;
@@ -196,7 +213,7 @@ button.secondary {
 }
 .history-card ul {
   list-style: none;
-  margin: 12px 0 0;
+  margin: 0;
   padding: 0;
   display: grid;
   gap: 8px;
@@ -248,6 +265,10 @@ button.secondary {
   #access-form,
   .server-card-grid {
     grid-template-columns: 1fr;
+  }
+  .gpu-card-index {
+    min-width: 24px;
+    padding-right: 6px;
   }
   .server-summary-list,
   .user-summary-list {

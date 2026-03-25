@@ -133,6 +133,7 @@ def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_us
         lambda: {
             'host_names': [],
             'host_addresses': [],
+            'active_days': set(),
             'gpu_samples': 0,
             'non_idle_samples': 0,
             'total_utilization': 0.0,
@@ -140,6 +141,7 @@ def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_us
                 lambda: {
                     'host_name': '',
                     'host_address': '',
+                    'active_days': set(),
                     'gpu_samples': 0,
                     'non_idle_samples': 0,
                     'total_utilization': 0.0,
@@ -165,6 +167,7 @@ def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_us
         bucket['gpu_samples'] += gpu_samples
         bucket['non_idle_samples'] += non_idle_samples
         bucket['total_utilization'] += total_utilization
+        bucket['active_days'].add(daily.date)
 
         server_item = bucket['server_breakdown'][host.address]
         server_item['host_name'] = host.name
@@ -172,6 +175,7 @@ def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_us
         server_item['gpu_samples'] += gpu_samples
         server_item['non_idle_samples'] += non_idle_samples
         server_item['total_utilization'] += total_utilization
+        server_item['active_days'].add(daily.date)
 
     results: list[UserSummaryResponse] = []
     for username, item in sorted(grouped.items(), key=lambda entry: (-entry[1]['gpu_samples'], entry[0])):
@@ -182,11 +186,12 @@ def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_us
                 gpu_hours=round(server['gpu_samples'] * sample_hours, 2),
                 non_idle_hours=round(server['non_idle_samples'] * sample_hours, 2),
                 average_gpu_utilization=round(server['total_utilization'] / (server['gpu_samples'] or 1), 2),
-                daily_average_gpu_hours=round((server['gpu_samples'] * sample_hours) / max(days, 1), 2),
+                daily_average_gpu_hours=round((server['gpu_samples'] * sample_hours) / max(len(server['active_days']), 1), 2),
             )
             for _, server in sorted(item['server_breakdown'].items())
         ]
         total_gpu_hours = round(item['gpu_samples'] * sample_hours, 2)
+        active_day_count = max(len(item['active_days']), 1)
         results.append(
             UserSummaryResponse(
                 username=username,
@@ -195,7 +200,7 @@ def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_us
                 gpu_hours=total_gpu_hours,
                 non_idle_hours=round(item['non_idle_samples'] * sample_hours, 2),
                 average_gpu_utilization=round(item['total_utilization'] / (item['gpu_samples'] or 1), 2),
-                daily_average_gpu_hours=round(total_gpu_hours / max(days, 1), 2),
+                daily_average_gpu_hours=round(total_gpu_hours / active_day_count, 2),
                 server_breakdown=server_breakdown,
             )
         )
