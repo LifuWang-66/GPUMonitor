@@ -207,17 +207,31 @@ def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_us
 
 
 def _get_host_gpu_type_map(db: Session, allowed_hosts: list[str]) -> dict[str, str]:
+    host_gpu_type_map: dict[str, str] = {}
     rows = db.execute(
         select(CurrentGpuStatus.gpu_name, Host.address)
         .join(Host, CurrentGpuStatus.host_id == Host.id)
         .where(Host.address.in_(allowed_hosts))
         .order_by(Host.address, CurrentGpuStatus.gpu_index)
     ).all()
-    host_gpu_type_map: dict[str, str] = {}
     for gpu_name, address in rows:
         if address in host_gpu_type_map:
             continue
         host_gpu_type_map[address] = _normalize_gpu_type(gpu_name)
+
+    daily_rows = db.execute(
+        select(DailyGpuAggregate.gpu_name, Host.address)
+        .join(Host, DailyGpuAggregate.host_id == Host.id)
+        .where(Host.address.in_(allowed_hosts))
+        .order_by(DailyGpuAggregate.date.desc(), Host.address, DailyGpuAggregate.gpu_index)
+    ).all()
+    for gpu_name, address in daily_rows:
+        if address in host_gpu_type_map:
+            continue
+        host_gpu_type_map[address] = _normalize_gpu_type(gpu_name)
+
+    for address in allowed_hosts:
+        host_gpu_type_map.setdefault(address, 'Unknown model')
     return host_gpu_type_map
 
 

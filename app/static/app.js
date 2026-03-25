@@ -257,13 +257,17 @@ function renderUsers(items) {
   wrapper.className = 'user-list';
 
   for (const item of items) {
+    const breakdown = (item.server_breakdown || []).map(server => ({
+      ...server,
+      gpu_type: server.gpu_type || 'Unknown model',
+    }));
     const block = document.createElement('article');
     block.className = 'user-card';
     block.innerHTML = `
       <div class="user-card-head">
         <div>
           <h3>${item.username}</h3>
-          <p class="muted">GPU types: ${item.server_breakdown.map(server => server.gpu_type).join(', ')}</p>
+          <p class="muted">GPU types: ${breakdown.map(server => server.gpu_type).join(', ')}</p>
         </div>
         <div class="user-summary-list">
           <span class="server-summary-badge">Total: ${item.gpu_hours} h</span>
@@ -285,7 +289,7 @@ function renderUsers(items) {
             </tr>
           </thead>
           <tbody>
-            ${item.server_breakdown
+            ${breakdown
               .map(
                 server => `
                   <tr>
