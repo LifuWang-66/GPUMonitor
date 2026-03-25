@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -18,14 +19,6 @@ STORAGE_THRESHOLD_BYTES = int(1.5 * 1024 * 1024 * 1024 * 1024)
 LOW_UTIL_THRESHOLD = 40.0
 MID_UTIL_THRESHOLD = 70.0
 EIGHT_HOURS = timedelta(hours=8)
-
-
-def _int_or_zero(value: int | None) -> int:
-    return int(value or 0)
-
-
-def _float_or_zero(value: float | None) -> float:
-    return float(value or 0.0)
 
 
 def get_collector_credentials() -> SshCredentials | None:
@@ -139,45 +132,50 @@ def upsert_snapshot(db: Session, host: Host, snapshot: HostSnapshot) -> None:
         current.is_idle = is_idle
         current.last_seen_at = snapshot.collected_at.replace(tzinfo=None)
 
-        daily_gpu = db.scalar(
-            select(DailyGpuAggregate).where(
-                DailyGpuAggregate.host_id == host.id,
-                DailyGpuAggregate.gpu_index == record.gpu_index,
-                DailyGpuAggregate.date == sample_date,
-            )
+        daily_gpu_insert = sqlite_insert(DailyGpuAggregate).values(
+            host_id=host.id,
+            gpu_index=record.gpu_index,
+            gpu_name=record.gpu_name,
+            date=sample_date,
+            samples=1,
+            busy_samples=1 if record.process_count > 0 else 0,
+            non_idle_samples=1 if not is_idle else 0,
+            total_utilization=record.utilization_gpu,
+            total_memory_used_mb=record.memory_used_mb,
         )
-        if daily_gpu is None:
-            daily_gpu = DailyGpuAggregate(host_id=host.id, gpu_index=record.gpu_index, gpu_name=record.gpu_name, date=sample_date)
-            db.add(daily_gpu)
-        daily_gpu.gpu_name = record.gpu_name
-        daily_gpu.samples = _int_or_zero(daily_gpu.samples) + 1
-        daily_gpu.total_utilization = _float_or_zero(daily_gpu.total_utilization) + record.utilization_gpu
-        daily_gpu.total_memory_used_mb = _float_or_zero(daily_gpu.total_memory_used_mb) + record.memory_used_mb
-        daily_gpu.busy_samples = _int_or_zero(daily_gpu.busy_samples)
-        daily_gpu.non_idle_samples = _int_or_zero(daily_gpu.non_idle_samples)
-        if record.process_count > 0:
-            daily_gpu.busy_samples = _int_or_zero(daily_gpu.busy_samples) + 1
-        if not is_idle:
-            daily_gpu.non_idle_samples = _int_or_zero(daily_gpu.non_idle_samples) + 1
+        daily_gpu_upsert = daily_gpu_insert.on_conflict_do_update(
+            index_elements=['host_id', 'gpu_index', 'date'],
+            set_={
+                'gpu_name': record.gpu_name,
+                'samples': func.coalesce(DailyGpuAggregate.samples, 0) + 1,
+                'busy_samples': func.coalesce(DailyGpuAggregate.busy_samples, 0) + (1 if record.process_count > 0 else 0),
+                'non_idle_samples': func.coalesce(DailyGpuAggregate.non_idle_samples, 0) + (1 if not is_idle else 0),
+                'total_utilization': func.coalesce(DailyGpuAggregate.total_utilization, 0.0) + record.utilization_gpu,
+                'total_memory_used_mb': func.coalesce(DailyGpuAggregate.total_memory_used_mb, 0.0) + record.memory_used_mb,
+            },
+        )
+        db.execute(daily_gpu_upsert)
 
         for username in record.active_users:
             if username in settings.excluded_users:
                 continue
-            daily_user = db.scalar(
-                select(DailyUserAggregate).where(
-                    DailyUserAggregate.host_id == host.id,
-                    DailyUserAggregate.username == username,
-                    DailyUserAggregate.date == sample_date,
-                )
+            daily_user_insert = sqlite_insert(DailyUserAggregate).values(
+                host_id=host.id,
+                username=username,
+                date=sample_date,
+                gpu_samples=1,
+                non_idle_samples=1 if not is_idle else 0,
+                total_utilization=record.utilization_gpu,
             )
-            if daily_user is None:
-                daily_user = DailyUserAggregate(host_id=host.id, username=username, date=sample_date)
-                db.add(daily_user)
-            daily_user.gpu_samples = _int_or_zero(daily_user.gpu_samples) + 1
-            daily_user.total_utilization = _float_or_zero(daily_user.total_utilization) + record.utilization_gpu
-            daily_user.non_idle_samples = _int_or_zero(daily_user.non_idle_samples)
-            if not is_idle:
-                daily_user.non_idle_samples = _int_or_zero(daily_user.non_idle_samples) + 1
+            daily_user_upsert = daily_user_insert.on_conflict_do_update(
+                index_elements=['host_id', 'username', 'date'],
+                set_={
+                    'gpu_samples': func.coalesce(DailyUserAggregate.gpu_samples, 0) + 1,
+                    'non_idle_samples': func.coalesce(DailyUserAggregate.non_idle_samples, 0) + (1 if not is_idle else 0),
+                    'total_utilization': func.coalesce(DailyUserAggregate.total_utilization, 0.0) + record.utilization_gpu,
+                },
+            )
+            db.execute(daily_user_upsert)
 
     _persist_user_utilization_samples(db, host, snapshot)
 
