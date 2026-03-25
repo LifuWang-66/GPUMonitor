@@ -17,9 +17,9 @@ from app.db import Base, SessionLocal, engine, get_db
 from app.models import UserProfile
 from app.schemas import CredentialCheckRequest, HostAccessResult, SessionResponse, TestEmailRequest, TestEmailResponse
 from app.services.analytics import get_current_status, get_gpu_history, get_user_history
-from app.services.collector import collect_live_current_status, ensure_hosts, run_collection
+from app.services.collector import collect_live_current_status, ensure_hosts, get_collector_credentials, run_collection
 from app.services.notifications import send_email
-from app.services.ssh_client import SshCredentials, validate_host_access
+from app.services.ssh_client import SshCredentials, fetch_home_users, validate_host_access
 
 settings = get_settings()
 scheduler = BackgroundScheduler(timezone='UTC')
@@ -58,6 +58,22 @@ templates = Jinja2Templates(directory='app/templates')
 
 def get_allowed_hosts(request: Request) -> list[str]:
     return request.session.get('accessible_hosts', [])
+
+
+def resolve_hosts_from_collector_view(username: str, fallback_hosts: list[str]) -> list[str]:
+    collector_credentials = get_collector_credentials()
+    if collector_credentials is None:
+        return fallback_hosts
+
+    visible_hosts: list[str] = []
+    for host in settings.hosts:
+        try:
+            host_users = fetch_home_users(host['address'], collector_credentials)
+            if username in host_users:
+                visible_hosts.append(host['address'])
+        except Exception:  # noqa: BLE001
+            continue
+    return visible_hosts or fallback_hosts
 
 
 @app.get('/', response_class=HTMLResponse)
@@ -103,6 +119,7 @@ def create_access_session(payload: CredentialCheckRequest, request: Request, db:
         results.append(HostAccessResult(name=host['name'], address=host['address'], accessible=accessible, reason=reason))
     if not accessible_hosts:
         raise HTTPException(status_code=400, detail='当前凭据无法访问任何 GPU 服务器。')
+    accessible_hosts = resolve_hosts_from_collector_view(normalized_username, accessible_hosts)
     request.session['username'] = normalized_username
     request.session['email'] = profile.email
     request.session['accessible_hosts'] = accessible_hosts
@@ -166,7 +183,7 @@ def api_user_history(request: Request, days: int = 30, allowed_hosts: list[str] 
     if days not in settings.allowed_history_windows:
         raise HTTPException(status_code=400, detail='不支持的时间窗口。')
     return get_user_history(db, allowed_hosts, days, viewer_username=request.session.get('username', ''))
-
+https://github.com/LifuWang-66/GPUMonitor/pull/24/conflict?name=app%252Fstatic%252Fstyles.css&base_oid=331501110b733810cbb17c2412c7eb1481d480b6&head_oid=9c7f8756e333bd2ffc1849fa4ce0230c23ae4051
 
 @app.post('/api/collector/run')
 def api_run_collector(db: Session = Depends(get_db)):

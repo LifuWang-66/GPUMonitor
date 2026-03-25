@@ -108,13 +108,17 @@ button.secondary {
   list-style: none;
   padding: 12px 14px;
   background: rgba(94, 234, 212, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 .server-summary::-webkit-details-marker {
   display: none;
 }
 .server-summary-main {
   font-weight: 700;
-  margin-bottom: 8px;
+  margin-bottom: 0;
 }
 .server-body {
   padding: 12px;
@@ -256,6 +260,7 @@ button.secondary {
 }
 @media (max-width: 768px) {
   .page-header,
+  .server-summary,
   .section-title-row,
   .server-section-head,
   .user-card-head {
