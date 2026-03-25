@@ -127,6 +127,7 @@ function createServerSection(hostName, hostAddress, cards, { collapsible = true 
     </div>
     <div class="server-card-grid"></div>
   `;
+  const collapsibleBody = `<div class="server-card-grid"></div>`;
 
   if (collapsible) {
     section.innerHTML = `
@@ -135,7 +136,7 @@ function createServerSection(hostName, hostAddress, cards, { collapsible = true 
           <div class="server-summary-main">${hostName} · ${hostAddress}</div>
           <div class="server-summary-list">${summaryBadges}</div>
         </summary>
-        <div class="server-body">${content}</div>
+        <div class="server-body">${collapsibleBody}</div>
       </details>
     `;
   } else {
