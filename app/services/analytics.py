@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import CurrentGpuStatus, DailyGpuAggregate, DailyUserAggregate, Host
 from app.schemas import CurrentGpuResponse, GpuSummaryResponse, TrendPoint, UserServerBreakdown, UserSummaryResponse
-from app.services.ssh_client import HostSnapshot
+from app.services.ssh_client import HostSnapshot, SshCredentials, collect_host_snapshot
 
 settings = get_settings()
 ADMIN_USERNAMES = {'lifu', 'panzhou'}
@@ -230,6 +230,11 @@ def _get_host_gpu_type_map(db: Session, allowed_hosts: list[str]) -> dict[str, s
             continue
         host_gpu_type_map[address] = _normalize_gpu_type(gpu_name)
 
+    unresolved_hosts = [address for address in allowed_hosts if address not in host_gpu_type_map]
+    if unresolved_hosts and settings.collector_ssh_username:
+        live_gpu_type_map = _get_live_gpu_type_map(unresolved_hosts)
+        host_gpu_type_map.update(live_gpu_type_map)
+
     for address in allowed_hosts:
         host_gpu_type_map.setdefault(address, 'Unknown model')
     return host_gpu_type_map
@@ -242,3 +247,23 @@ def _normalize_gpu_type(gpu_name: str) -> str:
     if 'RTX PRO 6000' in upper:
         return 'NVIDIA RTX Pro 6000'
     return gpu_name or 'Unknown model'
+
+
+def _get_live_gpu_type_map(host_addresses: list[str]) -> dict[str, str]:
+    credentials = SshCredentials(
+        username=settings.collector_ssh_username or '',
+        password=settings.collector_ssh_password,
+        key_path=settings.collector_ssh_key_path,
+        use_agent=bool(settings.collector_ssh_key_path and not settings.collector_ssh_password),
+    )
+    address_to_name = {item['address']: item['name'] for item in settings.hosts}
+    live_map: dict[str, str] = {}
+    for address in host_addresses:
+        host_name = address_to_name.get(address, address)
+        try:
+            snapshot = collect_host_snapshot(host_name, address, credentials)
+            if snapshot.gpu_records:
+                live_map[address] = _normalize_gpu_type(snapshot.gpu_records[0].gpu_name)
+        except Exception:  # noqa: BLE001
+            continue
+    return live_map
