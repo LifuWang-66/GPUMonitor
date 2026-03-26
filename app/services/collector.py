@@ -21,6 +21,7 @@ LOW_UTIL_THRESHOLD = 40.0
 MID_UTIL_THRESHOLD = 70.0
 EIGHT_HOURS = timedelta(hours=8)
 RUN_COLLECTION_LOCK = threading.Lock()
+MIN_EIGHT_HOUR_SAMPLE_RATIO = 0.9
 
 
 def get_collector_credentials() -> SshCredentials | None:
@@ -220,8 +221,9 @@ def _evaluate_and_handle_user_alerts(db: Session, host: Host, snapshot: HostSnap
         if not profile or not profile.email:
             continue
 
-        eight_hour_avg = _get_eight_hour_avg_util(db, host.id, username, snapshot.collected_at.replace(tzinfo=None))
+        eight_hour_avg, sample_count = _get_eight_hour_avg_util(db, host.id, username, snapshot.collected_at.replace(tzinfo=None))
         event_time = snapshot.collected_at.replace(tzinfo=None)
+        required_samples = _required_samples_for_eight_hours()
 
         if gpu_count > HIGH_GPU_COUNT_THRESHOLD:
             _notify_once(
@@ -237,6 +239,9 @@ def _evaluate_and_handle_user_alerts(db: Session, host: Host, snapshot: HostSnap
                 ),
                 cc_email=cc_email,
             )
+
+        if sample_count < required_samples:
+            continue
 
         if LOW_UTIL_THRESHOLD <= eight_hour_avg <= MID_UTIL_THRESHOLD:
             _notify_once(
@@ -266,7 +271,7 @@ def _evaluate_and_handle_user_alerts(db: Session, host: Host, snapshot: HostSnap
             )
 
 
-def _get_eight_hour_avg_util(db: Session, host_id: int, username: str, now_naive: datetime) -> float:
+def _get_eight_hour_avg_util(db: Session, host_id: int, username: str, now_naive: datetime) -> tuple[float, int]:
     since = now_naive - EIGHT_HOURS
     rows = db.scalars(
         select(UserUtilizationSample.average_gpu_utilization).where(
@@ -276,8 +281,13 @@ def _get_eight_hour_avg_util(db: Session, host_id: int, username: str, now_naive
         )
     ).all()
     if not rows:
-        return -1.0
-    return float(sum(rows) / len(rows))
+        return -1.0, 0
+    return float(sum(rows) / len(rows)), len(rows)
+
+
+def _required_samples_for_eight_hours() -> int:
+    expected = int((8 * 60) / max(settings.collector_interval_minutes, 1))
+    return max(int(expected * MIN_EIGHT_HOUR_SAMPLE_RATIO), 1)
 
 
 def _notify_once(
