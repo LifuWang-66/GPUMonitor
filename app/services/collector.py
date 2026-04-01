@@ -69,6 +69,50 @@ def collect_live_current_status(allowed_hosts: list[str]) -> tuple[list[CurrentG
     return snapshots, errors
 
 
+def refresh_current_status_only(db: Session, allowed_hosts: list[str]) -> tuple[list[CurrentGpuResponse], list[str]]:
+    credentials = get_collector_credentials()
+    if credentials is None:
+        return [], ['Collector skipped: missing COLLECTOR_SSH_USERNAME configuration.']
+
+    host_rows = db.scalars(select(Host).where(Host.address.in_(allowed_hosts))).all()
+    host_by_address = {host.address: host for host in host_rows}
+    errors: list[str] = []
+    for address in allowed_hosts:
+        host = host_by_address.get(address)
+        if not host:
+            continue
+        try:
+            snapshot = collect_host_snapshot(host.name, host.address, credentials)
+            _upsert_current_status_snapshot(db, host, snapshot)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f'Failed {address}: {exc}')
+    db.commit()
+    refreshed = db.execute(
+        select(CurrentGpuStatus, Host)
+        .join(Host, CurrentGpuStatus.host_id == Host.id)
+        .where(Host.address.in_(allowed_hosts))
+        .order_by(Host.address, CurrentGpuStatus.gpu_index)
+    ).all()
+    current_status = [
+        CurrentGpuResponse(
+            host_name=host.name,
+            host_address=host.address,
+            gpu_index=status.gpu_index,
+            gpu_name=status.gpu_name,
+            utilization_gpu=status.utilization_gpu,
+            memory_used_mb=status.memory_used_mb,
+            memory_total_mb=status.memory_total_mb,
+            temperature_c=status.temperature_c,
+            active_users=[user for user in status.active_users.split(',') if user],
+            process_count=status.process_count,
+            is_idle=status.is_idle,
+            last_seen_at=status.last_seen_at,
+        )
+        for status, host in refreshed
+    ]
+    return current_status, errors
+
+
 def run_collection(db: Session) -> list[str]:
     if not RUN_COLLECTION_LOCK.acquire(blocking=False):
         return ['Collector skipped: another collection run is already in progress.']
@@ -96,27 +140,9 @@ def run_collection(db: Session) -> list[str]:
 
 def upsert_snapshot(db: Session, host: Host, snapshot: HostSnapshot) -> None:
     sample_date = snapshot.collected_at.date()
+    _upsert_current_status_snapshot(db, host, snapshot)
     for record in snapshot.gpu_records:
         is_idle = record.utilization_gpu < 10.0
-        current = db.scalar(
-            select(CurrentGpuStatus).where(
-                CurrentGpuStatus.host_id == host.id,
-                CurrentGpuStatus.gpu_index == record.gpu_index,
-            )
-        )
-        if current is None:
-            current = CurrentGpuStatus(host_id=host.id, gpu_index=record.gpu_index, gpu_name=record.gpu_name, gpu_uuid=record.gpu_uuid)
-            db.add(current)
-        current.gpu_name = record.gpu_name
-        current.gpu_uuid = record.gpu_uuid
-        current.utilization_gpu = record.utilization_gpu
-        current.memory_used_mb = record.memory_used_mb
-        current.memory_total_mb = record.memory_total_mb
-        current.temperature_c = record.temperature_c
-        current.active_users = ','.join(record.active_users)
-        current.process_count = record.process_count
-        current.is_idle = is_idle
-        current.last_seen_at = snapshot.collected_at.replace(tzinfo=None)
 
         daily_gpu_insert = sqlite_insert(DailyGpuAggregate).values(
             host_id=host.id,
@@ -164,6 +190,30 @@ def upsert_snapshot(db: Session, host: Host, snapshot: HostSnapshot) -> None:
             db.execute(daily_user_upsert)
 
     _persist_user_utilization_samples(db, host, snapshot)
+
+
+def _upsert_current_status_snapshot(db: Session, host: Host, snapshot: HostSnapshot) -> None:
+    for record in snapshot.gpu_records:
+        is_idle = record.utilization_gpu < 10.0
+        current = db.scalar(
+            select(CurrentGpuStatus).where(
+                CurrentGpuStatus.host_id == host.id,
+                CurrentGpuStatus.gpu_index == record.gpu_index,
+            )
+        )
+        if current is None:
+            current = CurrentGpuStatus(host_id=host.id, gpu_index=record.gpu_index, gpu_name=record.gpu_name, gpu_uuid=record.gpu_uuid)
+            db.add(current)
+        current.gpu_name = record.gpu_name
+        current.gpu_uuid = record.gpu_uuid
+        current.utilization_gpu = record.utilization_gpu
+        current.memory_used_mb = record.memory_used_mb
+        current.memory_total_mb = record.memory_total_mb
+        current.temperature_c = record.temperature_c
+        current.active_users = ','.join(record.active_users)
+        current.process_count = record.process_count
+        current.is_idle = is_idle
+        current.last_seen_at = snapshot.collected_at.replace(tzinfo=None)
 
 
 def _persist_user_utilization_samples(db: Session, host: Host, snapshot: HostSnapshot) -> None:
@@ -221,7 +271,7 @@ def _evaluate_and_handle_user_alerts(db: Session, host: Host, snapshot: HostSnap
         if not profile or not profile.email:
             continue
 
-        eight_hour_avg, sample_count = _get_eight_hour_avg_util(db, host.id, username, snapshot.collected_at.replace(tzinfo=None))
+        eight_hour_max, sample_count = _get_eight_hour_max_util(db, host.id, username, snapshot.collected_at.replace(tzinfo=None))
         event_time = snapshot.collected_at.replace(tzinfo=None)
         required_samples = _required_samples_for_eight_hours()
 
@@ -243,7 +293,7 @@ def _evaluate_and_handle_user_alerts(db: Session, host: Host, snapshot: HostSnap
         if sample_count < required_samples:
             continue
 
-        if LOW_UTIL_THRESHOLD <= eight_hour_avg <= MID_UTIL_THRESHOLD:
+        if LOW_UTIL_THRESHOLD <= eight_hour_max <= MID_UTIL_THRESHOLD:
             _notify_once(
                 db,
                 host,
@@ -251,10 +301,10 @@ def _evaluate_and_handle_user_alerts(db: Session, host: Host, snapshot: HostSnap
                 profile.email,
                 event_type='avg_util_8h_40_70',
                 event_key=event_time.strftime('%Y-%m-%d-%H'),
-                reason=f'Your 8-hour average GPU utilization is {eight_hour_avg:.2f}% (between 40% and 70%).',
+                reason=f'Your 8-hour max GPU utilization is {eight_hour_max:.2f}% (between 40% and 70%).',
                 cc_email=cc_email,
             )
-        elif eight_hour_avg < LOW_UTIL_THRESHOLD and eight_hour_avg >= 0:
+        elif eight_hour_max < LOW_UTIL_THRESHOLD and eight_hour_max >= 0:
             kill_result = kill_user_gpu_processes(host.address, credentials, username)
             _notify_once(
                 db,
@@ -264,14 +314,14 @@ def _evaluate_and_handle_user_alerts(db: Session, host: Host, snapshot: HostSnap
                 event_type='avg_util_8h_below_40_killed',
                 event_key=event_time.strftime('%Y-%m-%d-%H'),
                 reason=(
-                    f'Your 8-hour average GPU utilization is {eight_hour_avg:.2f}% (below 40%). '
+                    f'Your 8-hour max GPU utilization is {eight_hour_max:.2f}% (below 40%). '
                     f'GPU processes were terminated. Killed PIDs: {kill_result or "none"}'
                 ),
                 cc_email=cc_email,
             )
 
 
-def _get_eight_hour_avg_util(db: Session, host_id: int, username: str, now_naive: datetime) -> tuple[float, int]:
+def _get_eight_hour_max_util(db: Session, host_id: int, username: str, now_naive: datetime) -> tuple[float, int]:
     since = now_naive - EIGHT_HOURS
     rows = db.scalars(
         select(UserUtilizationSample.average_gpu_utilization).where(
@@ -282,7 +332,7 @@ def _get_eight_hour_avg_util(db: Session, host_id: int, username: str, now_naive
     ).all()
     if not rows:
         return -1.0, 0
-    return float(sum(rows) / len(rows)), len(rows)
+    return float(max(rows)), len(rows)
 
 
 def _required_samples_for_eight_hours() -> int:

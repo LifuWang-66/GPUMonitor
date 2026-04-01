@@ -17,7 +17,7 @@ from app.db import Base, SessionLocal, engine, get_db
 from app.models import UserProfile
 from app.schemas import CredentialCheckRequest, HostAccessResult, SessionResponse, TestEmailRequest, TestEmailResponse
 from app.services.analytics import get_current_status, get_gpu_history, get_user_history
-from app.services.collector import collect_live_current_status, ensure_hosts, get_collector_credentials, run_collection
+from app.services.collector import ensure_hosts, get_collector_credentials, refresh_current_status_only, run_collection
 from app.services.notifications import send_email
 from app.services.ssh_client import SshCredentials, fetch_home_users, validate_host_access
 
@@ -166,8 +166,8 @@ def api_current_status(allowed_hosts: list[str] = Depends(get_allowed_hosts), db
 
 
 @app.post('/api/status/refresh')
-def api_refresh_current_status(allowed_hosts: list[str] = Depends(get_allowed_hosts)):
-    current_status, errors = collect_live_current_status(allowed_hosts)
+def api_refresh_current_status(allowed_hosts: list[str] = Depends(get_allowed_hosts), db: Session = Depends(get_db)):
+    current_status, errors = refresh_current_status_only(db, allowed_hosts)
     return {'current_status': current_status, 'errors': errors}
 
 
