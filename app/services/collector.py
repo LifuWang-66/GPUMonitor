@@ -83,6 +83,18 @@ def refresh_current_status_only(db: Session, allowed_hosts: list[str]) -> tuple[
             continue
         try:
             snapshot = collect_host_snapshot(host.name, host.address, credentials)
+            print(f'[refresh] host={host.name} address={host.address} collected_at={snapshot.collected_at.isoformat()} gpus={len(snapshot.gpu_records)}')
+            for record in snapshot.gpu_records:
+                print(
+                    '[refresh] '
+                    f'host={host.address} '
+                    f'gpu_index={record.gpu_index} '
+                    f'gpu_name={record.gpu_name} '
+                    f'util={record.utilization_gpu:.1f}% '
+                    f'mem={record.memory_used_mb:.0f}/{record.memory_total_mb:.0f}MB '
+                    f'users={",".join(record.active_users) if record.active_users else "none"} '
+                    f'proc={record.process_count}'
+                )
             _upsert_current_status_snapshot(db, host, snapshot)
         except Exception as exc:  # noqa: BLE001
             errors.append(f'Failed {address}: {exc}')
