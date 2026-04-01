@@ -19,7 +19,7 @@ from app.schemas import CredentialCheckRequest, HostAccessResult, SessionRespons
 from app.services.analytics import get_current_status, get_gpu_history, get_user_history
 from app.services.collector import ensure_hosts, get_collector_credentials, refresh_current_status_only, run_collection
 from app.services.notifications import send_email
-from app.services.ssh_client import SshCredentials, fetch_home_users, validate_host_access
+from app.services.ssh_client import SshCredentials, close_collector_connections, fetch_home_users, validate_host_access
 
 settings = get_settings()
 scheduler = BackgroundScheduler(timezone='UTC')
@@ -47,6 +47,7 @@ async def lifespan(_: FastAPI):
         yield
     finally:
         scheduler.shutdown(wait=False)
+        close_collector_connections()
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)

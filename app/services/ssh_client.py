@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -71,7 +72,16 @@ class RemoteCollectorError(RuntimeError):
     pass
 
 
-def _connect(host: str, credentials: SshCredentials) -> paramiko.SSHClient:
+_COLLECTOR_CLIENTS: dict[str, paramiko.SSHClient] = {}
+_COLLECTOR_CLIENT_KEYS: dict[str, tuple[str, str | None, str | None, bool]] = {}
+_COLLECTOR_CLIENTS_LOCK = threading.Lock()
+
+
+def _credentials_key(credentials: SshCredentials) -> tuple[str, str | None, str | None, bool]:
+    return (credentials.username, credentials.password, credentials.key_path, credentials.use_agent)
+
+
+def _connect(host: str, credentials: SshCredentials, timeout: int | None = None) -> paramiko.SSHClient:
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     connection_kwargs = {
@@ -81,7 +91,7 @@ def _connect(host: str, credentials: SshCredentials) -> paramiko.SSHClient:
         'password': credentials.password,
         'allow_agent': credentials.use_agent,
         'look_for_keys': credentials.use_agent,
-        'timeout': settings.ssh_connect_timeout_seconds,
+        'timeout': timeout if timeout is not None else settings.ssh_connect_timeout_seconds,
     }
     if credentials.key_path:
         connection_kwargs['key_filename'] = credentials.key_path
@@ -89,16 +99,49 @@ def _connect(host: str, credentials: SshCredentials) -> paramiko.SSHClient:
     return client
 
 
+def _get_or_create_collector_client(host: str, credentials: SshCredentials) -> paramiko.SSHClient:
+    key = _credentials_key(credentials)
+    with _COLLECTOR_CLIENTS_LOCK:
+        existing = _COLLECTOR_CLIENTS.get(host)
+        existing_key = _COLLECTOR_CLIENT_KEYS.get(host)
+        if existing is not None and existing_key == key and existing.get_transport() and existing.get_transport().is_active():
+            return existing
+        if existing is not None:
+            try:
+                existing.close()
+            except Exception:  # noqa: BLE001
+                pass
+        client = _connect(host, credentials, timeout=5)
+        _COLLECTOR_CLIENTS[host] = client
+        _COLLECTOR_CLIENT_KEYS[host] = key
+        return client
+
+
+def close_collector_connections() -> None:
+    with _COLLECTOR_CLIENTS_LOCK:
+        for client in _COLLECTOR_CLIENTS.values():
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001
+                pass
+        _COLLECTOR_CLIENTS.clear()
+        _COLLECTOR_CLIENT_KEYS.clear()
+
+
+def _execute_command_with_client(client: paramiko.SSHClient, command: str) -> str:
+    _, stdout, stderr = client.exec_command(command)
+    exit_code = stdout.channel.recv_exit_status()
+    output = stdout.read().decode().strip()
+    error = stderr.read().decode().strip()
+    if exit_code != 0 and error:
+        raise RemoteCollectorError(error)
+    return output
+
+
 def execute_command(host: str, credentials: SshCredentials, command: str) -> str:
     client = _connect(host, credentials)
     try:
-        _, stdout, stderr = client.exec_command(command)
-        exit_code = stdout.channel.recv_exit_status()
-        output = stdout.read().decode().strip()
-        error = stderr.read().decode().strip()
-        if exit_code != 0 and error:
-            raise RemoteCollectorError(error)
-        return output
+        return _execute_command_with_client(client, command)
     finally:
         client.close()
 
@@ -153,11 +196,23 @@ def kill_user_gpu_processes(host: str, credentials: SshCredentials, username: st
 
 
 def collect_host_snapshot(host_name: str, host_address: str, credentials: SshCredentials) -> HostSnapshot:
-    gpu_output = execute_command(host_address, credentials, GPU_QUERY)
-    process_output = execute_command(host_address, credentials, PROCESS_QUERY)
-    pid_users_raw = execute_command(host_address, credentials, PID_USER_QUERY)
-    storage_used_raw = execute_command(host_address, credentials, STORAGE_QUERY)
-    home_user_usage_raw = execute_command(host_address, credentials, HOME_USER_USAGE_QUERY)
+    client = _get_or_create_collector_client(host_address, credentials)
+    try:
+        gpu_output = _execute_command_with_client(client, GPU_QUERY)
+        process_output = _execute_command_with_client(client, PROCESS_QUERY)
+        pid_users_raw = _execute_command_with_client(client, PID_USER_QUERY)
+        storage_used_raw = _execute_command_with_client(client, STORAGE_QUERY)
+        home_user_usage_raw = _execute_command_with_client(client, HOME_USER_USAGE_QUERY)
+    except Exception:  # noqa: BLE001
+        with _COLLECTOR_CLIENTS_LOCK:
+            stale = _COLLECTOR_CLIENTS.pop(host_address, None)
+            _COLLECTOR_CLIENT_KEYS.pop(host_address, None)
+        if stale is not None:
+            try:
+                stale.close()
+            except Exception:  # noqa: BLE001
+                pass
+        raise
     pid_users = json.loads(pid_users_raw or '{}')
     storage_used_bytes = int(storage_used_raw or 0)
     home_user_used_bytes: dict[str, int] = {}
