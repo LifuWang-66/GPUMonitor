@@ -195,14 +195,20 @@ def kill_user_gpu_processes(host: str, credentials: SshCredentials, username: st
     return execute_command(host, credentials, command)
 
 
-def collect_host_snapshot(host_name: str, host_address: str, credentials: SshCredentials) -> HostSnapshot:
+def collect_host_snapshot(
+    host_name: str,
+    host_address: str,
+    credentials: SshCredentials,
+    *,
+    include_home_user_usage: bool = True,
+) -> HostSnapshot:
     client = _get_or_create_collector_client(host_address, credentials)
     try:
         gpu_output = _execute_command_with_client(client, GPU_QUERY)
         process_output = _execute_command_with_client(client, PROCESS_QUERY)
         pid_users_raw = _execute_command_with_client(client, PID_USER_QUERY)
         storage_used_raw = _execute_command_with_client(client, STORAGE_QUERY)
-        home_user_usage_raw = _execute_command_with_client(client, HOME_USER_USAGE_QUERY)
+        home_user_usage_raw = _execute_command_with_client(client, HOME_USER_USAGE_QUERY) if include_home_user_usage else ''
     except Exception:  # noqa: BLE001
         with _COLLECTOR_CLIENTS_LOCK:
             stale = _COLLECTOR_CLIENTS.pop(host_address, None)

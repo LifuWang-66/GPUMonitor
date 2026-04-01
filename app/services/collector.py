@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -22,6 +22,7 @@ MID_UTIL_THRESHOLD = 70.0
 EIGHT_HOURS = timedelta(hours=8)
 RUN_COLLECTION_LOCK = threading.Lock()
 MIN_EIGHT_HOUR_SAMPLE_RATIO = 0.9
+_LAST_HOME_USAGE_SCAN_DATE_BY_HOST: dict[int, date] = {}
 
 
 def get_collector_credentials() -> SshCredentials | None:
@@ -82,7 +83,7 @@ def refresh_current_status_only(db: Session, allowed_hosts: list[str]) -> tuple[
         if not host:
             continue
         try:
-            snapshot = collect_host_snapshot(host.name, host.address, credentials)
+            snapshot = collect_host_snapshot(host.name, host.address, credentials, include_home_user_usage=False)
             print(f'[refresh] host={host.name} address={host.address} collected_at={snapshot.collected_at.isoformat()} gpus={len(snapshot.gpu_records)}')
             for record in snapshot.gpu_records:
                 print(
@@ -137,7 +138,12 @@ def run_collection(db: Session) -> list[str]:
         hosts = ensure_hosts(db)
         for host in hosts:
             try:
-                snapshot = collect_host_snapshot(host.name, host.address, credentials)
+                snapshot = collect_host_snapshot(
+                    host.name,
+                    host.address,
+                    credentials,
+                    include_home_user_usage=_should_collect_home_user_usage_today(host.id),
+                )
                 upsert_snapshot(db, host, snapshot)
                 _evaluate_and_handle_user_alerts(db, host, snapshot, credentials)
                 messages.append(f'Collected {host.address}')
@@ -148,6 +154,15 @@ def run_collection(db: Session) -> list[str]:
         return messages
     finally:
         RUN_COLLECTION_LOCK.release()
+
+
+def _should_collect_home_user_usage_today(host_id: int) -> bool:
+    today = datetime.now(timezone.utc).date()
+    last_scanned = _LAST_HOME_USAGE_SCAN_DATE_BY_HOST.get(host_id)
+    if last_scanned == today:
+        return False
+    _LAST_HOME_USAGE_SCAN_DATE_BY_HOST[host_id] = today
+    return True
 
 
 def upsert_snapshot(db: Session, host: Host, snapshot: HostSnapshot) -> None:
