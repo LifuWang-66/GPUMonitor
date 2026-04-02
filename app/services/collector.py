@@ -419,7 +419,6 @@ def build_notification_email(
         '1) Job name / experiment name\n'
         '2) Business justification\n'
         '3) Expected end time\n'
-        '4) Mitigation plan\n'
     )
     return subject, body
 
