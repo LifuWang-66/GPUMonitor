@@ -416,8 +416,8 @@ def build_notification_email(
         'Please complete this form and explain why this happened:\n'
         f'{settings.incident_form_url}\n\n'
         'Required fields in your response:\n'
-        '1) Job name / experiment name\n'
-        '2) Business justification\n'
+        '1) Experiment name\n'
+        '2) Justification\n'
         '3) Expected end time\n'
     )
     return subject, body
