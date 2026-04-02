@@ -14,15 +14,24 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import get_settings
 from app.db import Base, SessionLocal, engine, get_db
-from app.models import UserProfile
-from app.schemas import CredentialCheckRequest, HostAccessResult, SessionResponse, TestEmailRequest, TestEmailResponse
+from app.models import Host, UserProfile
+from app.schemas import (
+    CredentialCheckRequest,
+    HostAccessResult,
+    SessionResponse,
+    TestEmailRequest,
+    TestEmailResponse,
+    TestPolicyEmailRequest,
+    TestPolicyEmailResponse,
+)
 from app.services.analytics import get_current_status, get_gpu_history, get_user_history
-from app.services.collector import ensure_hosts, get_collector_credentials, refresh_current_status_only, run_collection
+from app.services.collector import build_notification_email, ensure_hosts, get_collector_credentials, refresh_current_status_only, run_collection
 from app.services.notifications import send_email
 from app.services.ssh_client import SshCredentials, close_collector_connections, fetch_home_users, validate_host_access
 
 settings = get_settings()
 scheduler = BackgroundScheduler(timezone='UTC')
+ADMIN_USERNAMES = {'lifu', 'panzhou'}
 
 
 def _scheduled_collection() -> None:
@@ -219,3 +228,44 @@ def api_test_email(payload: TestEmailRequest, request: Request, db: Session = De
     if not success:
         raise HTTPException(status_code=500, detail='Failed to send test email. Check SMTP settings.')
     return TestEmailResponse(success=True, to_email=target_email, cc_email=cc_email, detail='Test email sent.')
+
+
+@app.post('/api/notifications/test-policy-email', response_model=TestPolicyEmailResponse)
+def api_test_policy_email(payload: TestPolicyEmailRequest, request: Request, db: Session = Depends(get_db)):
+    viewer = (request.session.get('username') or '').strip()
+    if viewer not in ADMIN_USERNAMES:
+        raise HTTPException(status_code=403, detail='Only lifu and panzhou can run policy email tests.')
+
+    username = payload.username.strip()
+    profile = db.scalar(select(UserProfile).where(UserProfile.username == username))
+    if not profile or not (profile.email or '').strip():
+        raise HTTPException(status_code=404, detail=f'No email found in database for user "{username}".')
+
+    host = db.scalar(select(Host).where(Host.address == payload.host_address.strip()))
+    if host is None:
+        raise HTTPException(status_code=404, detail=f'Host not found: "{payload.host_address}".')
+
+    cc_email: str | None = None
+    if payload.cc_lifu:
+        lifu_profile = db.scalar(select(UserProfile).where(UserProfile.username == 'lifu'))
+        if lifu_profile and (lifu_profile.email or '').strip():
+            cc_email = lifu_profile.email.strip()
+
+    reason = (
+        f'Your 8-hour max GPU utilization is {payload.simulated_max_utilization:.2f}% '
+        '(between 40% and 70%).'
+    )
+    subject, body = build_notification_email(host.name, host.address, username, 'avg_util_8h_40_70', reason)
+    success = send_email(profile.email.strip(), subject, body, cc_email=cc_email)
+    if not success:
+        raise HTTPException(status_code=500, detail='Failed to send policy test email. Check SMTP settings.')
+    return TestPolicyEmailResponse(
+        success=True,
+        username=username,
+        to_email=profile.email.strip(),
+        cc_email=cc_email,
+        host_address=host.address,
+        host_name=host.name,
+        simulated_max_utilization=payload.simulated_max_utilization,
+        detail='Policy-style test email sent.',
+    )

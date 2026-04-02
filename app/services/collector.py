@@ -388,19 +388,7 @@ def _notify_once(
     if existing:
         return
 
-    subject = f'[{host.name}/{host.address}] GPU usage action required - {event_type}'
-    body = (
-        f'Hello {username},\n\n'
-        f'This alert was triggered on host {host.name} ({host.address}).\n'
-        f'Reason:\n- {reason}\n\n'
-        'Please complete this form and explain why this happened:\n'
-        f'{settings.incident_form_url}\n\n'
-        'Required fields in your response:\n'
-        '1) Job name / experiment name\n'
-        '2) Business justification\n'
-        '3) Expected end time\n'
-        '4) Mitigation plan\n'
-    )
+    subject, body = build_notification_email(host.name, host.address, username, event_type, reason)
     if send_email(email, subject, body, cc_email=cc_email):
         db.add(
             NotificationEvent(
@@ -411,6 +399,29 @@ def _notify_once(
                 sent_at=datetime.utcnow(),
             )
         )
+
+
+def build_notification_email(
+    host_name: str,
+    host_address: str,
+    username: str,
+    event_type: str,
+    reason: str,
+) -> tuple[str, str]:
+    subject = f'[{host_name}/{host_address}] GPU usage action required - {event_type}'
+    body = (
+        f'Hello {username},\n\n'
+        f'This alert was triggered on host {host_name} ({host_address}).\n'
+        f'Reason:\n- {reason}\n\n'
+        'Please complete this form and explain why this happened:\n'
+        f'{settings.incident_form_url}\n\n'
+        'Required fields in your response:\n'
+        '1) Job name / experiment name\n'
+        '2) Business justification\n'
+        '3) Expected end time\n'
+        '4) Mitigation plan\n'
+    )
+    return subject, body
 
 
 def cleanup_old_data(db: Session) -> None:

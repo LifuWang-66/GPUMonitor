@@ -36,6 +36,24 @@ class TestEmailResponse(BaseModel):
     detail: str
 
 
+class TestPolicyEmailRequest(BaseModel):
+    username: str = Field(min_length=1)
+    host_address: str = Field(min_length=1)
+    simulated_max_utilization: float = 55.0
+    cc_lifu: bool = True
+
+
+class TestPolicyEmailResponse(BaseModel):
+    success: bool
+    username: str
+    to_email: str
+    cc_email: str | None = None
+    host_address: str
+    host_name: str
+    simulated_max_utilization: float
+    detail: str
+
+
 class CurrentGpuResponse(BaseModel):
     host_name: str
     host_address: str
