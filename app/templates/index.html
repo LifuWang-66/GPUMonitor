@@ -26,7 +26,7 @@
     <main class="layout">
       <section class="panel auth-panel">
         <h2>Access Check</h2>
-        <p>Enter your own Linux account. The system will SSH into 5 GPU servers to verify which hosts you can access, and only show data from those hosts.</p>
+        <p>Enter your own Linux account. If it is your first login, please enter your smu email.</p>
         <form id="access-form" method="post" action="/session/access">
           <label>
             Username
@@ -89,7 +89,7 @@
         <div class="section-title-row">
           <div>
             <h2>User GPU Usage</h2>
-            <p class="muted section-note">By default, only the current user is shown. lifu and panzhou can view all users. Expand to see per-host details.</p>
+            <p class="muted section-note">By default, only the current user is shown. Expand to see per-host details.</p>
           </div>
         </div>
         <div id="user-table-wrapper" class="empty-state">User aggregates you are allowed to view will appear after login.</div>
