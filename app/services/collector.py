@@ -20,6 +20,7 @@ STORAGE_THRESHOLD_BYTES = int(1.5 * 1024 * 1024 * 1024 * 1024)
 LOW_UTIL_THRESHOLD = 40.0
 MID_UTIL_THRESHOLD = 70.0
 EIGHT_HOURS = timedelta(hours=8)
+ESCALATION_AFTER = timedelta(days=1)
 RUN_COLLECTION_LOCK = threading.Lock()
 MIN_EIGHT_HOUR_SAMPLE_RATIO = 0.9
 _LAST_HOME_USAGE_SCAN_DATE_BY_HOST: dict[int, date] = {}
@@ -266,25 +267,27 @@ def _persist_user_utilization_samples(db: Session, host: Host, snapshot: HostSna
 def _evaluate_and_handle_user_alerts(db: Session, host: Host, snapshot: HostSnapshot, credentials: SshCredentials) -> None:
     lifu_profile = db.scalar(select(UserProfile).where(UserProfile.username == 'lifu'))
     cc_email = lifu_profile.email if lifu_profile and lifu_profile.email else None
+    active_issues: set[tuple[str, str]] = set()
 
-    for username, used_bytes in (snapshot.home_user_used_bytes or {}).items():
-        if used_bytes <= STORAGE_THRESHOLD_BYTES:
-            continue
-        profile = db.scalar(select(UserProfile).where(UserProfile.username == username))
-        if not profile or not profile.email:
-            continue
-        event_time = snapshot.collected_at.replace(tzinfo=None)
-        used_tb = used_bytes / 1024 / 1024 / 1024 / 1024
-        _notify_once(
-            db,
-            host,
-            username,
-            profile.email,
-            event_type='home_user_storage_over_1_5tb',
-            event_key=event_time.strftime('%Y-%m-%d'),
-            reason=f'/home/{username} usage is {used_tb:.2f} TB, which exceeds the 1.5 TB threshold.',
-            cc_email=cc_email,
-        )
+    if snapshot.home_user_used_bytes is not None:
+        for username, used_bytes in snapshot.home_user_used_bytes.items():
+            if used_bytes <= STORAGE_THRESHOLD_BYTES:
+                continue
+            profile = db.scalar(select(UserProfile).where(UserProfile.username == username))
+            if not profile or not profile.email:
+                continue
+            used_tb = used_bytes / 1024 / 1024 / 1024 / 1024
+            _notify_issue_with_escalation(
+                db,
+                host,
+                username,
+                profile.email,
+                event_type='home_user_storage_over_1_5tb',
+                reason=f'/home/{username} usage is {used_tb:.2f} TB, which exceeds the 1.5 TB threshold.',
+                cc_email=cc_email,
+                lifu_email=cc_email,
+            )
+            active_issues.add((username, 'home_user_storage_over_1_5tb'))
 
     per_user_gpu_count: dict[str, int] = {}
     for record in snapshot.gpu_records:
@@ -299,53 +302,57 @@ def _evaluate_and_handle_user_alerts(db: Session, host: Host, snapshot: HostSnap
             continue
 
         eight_hour_max, sample_count = _get_eight_hour_max_util(db, host.id, username, snapshot.collected_at.replace(tzinfo=None))
-        event_time = snapshot.collected_at.replace(tzinfo=None)
         required_samples = _required_samples_for_eight_hours()
 
         if gpu_count > HIGH_GPU_COUNT_THRESHOLD:
-            _notify_once(
+            _notify_issue_with_escalation(
                 db,
                 host,
                 username,
                 profile.email,
                 event_type='gpu_count_over_8',
-                event_key=event_time.strftime('%Y-%m-%d'),
                 reason=(
                     f'You are using {gpu_count} GPUs on this host. More than 8 GPUs can heavily impact fair-share '
                     'capacity and block other users from scheduling jobs.'
                 ),
                 cc_email=cc_email,
+                lifu_email=cc_email,
             )
+            active_issues.add((username, 'gpu_count_over_8'))
 
         if sample_count < required_samples:
             continue
 
         if LOW_UTIL_THRESHOLD <= eight_hour_max <= MID_UTIL_THRESHOLD:
-            _notify_once(
+            _notify_issue_with_escalation(
                 db,
                 host,
                 username,
                 profile.email,
                 event_type='avg_util_8h_40_70',
-                event_key=event_time.strftime('%Y-%m-%d-%H'),
                 reason=f'Your 8-hour max GPU utilization is {eight_hour_max:.2f}% (between 40% and 70%).',
                 cc_email=cc_email,
+                lifu_email=cc_email,
             )
+            active_issues.add((username, 'avg_util_8h_40_70'))
         elif eight_hour_max < LOW_UTIL_THRESHOLD and eight_hour_max >= 0:
             kill_result = kill_user_gpu_processes(host.address, credentials, username)
-            _notify_once(
+            _notify_issue_with_escalation(
                 db,
                 host,
                 username,
                 profile.email,
                 event_type='avg_util_8h_below_40_killed',
-                event_key=event_time.strftime('%Y-%m-%d-%H'),
                 reason=(
                     f'Your 8-hour max GPU utilization is {eight_hour_max:.2f}% (below 40%). '
                     f'GPU processes were terminated. Killed PIDs: {kill_result or "none"}'
                 ),
                 cc_email=cc_email,
+                lifu_email=cc_email,
             )
+            active_issues.add((username, 'avg_util_8h_below_40_killed'))
+
+    _clear_resolved_issue_events(db, host.id, active_issues)
 
 
 def _get_eight_hour_max_util(db: Session, host_id: int, username: str, now_naive: datetime) -> tuple[float, int]:
@@ -367,38 +374,92 @@ def _required_samples_for_eight_hours() -> int:
     return max(int(expected * MIN_EIGHT_HOUR_SAMPLE_RATIO), 1)
 
 
-def _notify_once(
+def _notify_issue_with_escalation(
     db: Session,
     host: Host,
     username: str,
     email: str,
     event_type: str,
-    event_key: str,
     reason: str,
     cc_email: str | None = None,
+    lifu_email: str | None = None,
 ) -> None:
+    now = datetime.utcnow()
+    active_key = 'active'
+    escalated_key = 'escalated'
     existing = db.scalar(
         select(NotificationEvent).where(
             NotificationEvent.host_id == host.id,
             NotificationEvent.username == username,
             NotificationEvent.event_type == event_type,
-            NotificationEvent.event_key == event_key,
+            NotificationEvent.event_key == active_key,
         )
     )
-    if existing:
+    if existing is None:
+        subject, body = build_notification_email(host.name, host.address, username, event_type, reason)
+        if send_email(email, subject, body, cc_email=cc_email):
+            db.add(
+                NotificationEvent(
+                    host_id=host.id,
+                    username=username,
+                    event_type=event_type,
+                    event_key=active_key,
+                    sent_at=now,
+                )
+            )
         return
 
-    subject, body = build_notification_email(host.name, host.address, username, event_type, reason)
-    if send_email(email, subject, body, cc_email=cc_email):
+    if lifu_email is None:
+        return
+
+    if now - existing.sent_at < ESCALATION_AFTER:
+        return
+
+    escalated = db.scalar(
+        select(NotificationEvent).where(
+            NotificationEvent.host_id == host.id,
+            NotificationEvent.username == username,
+            NotificationEvent.event_type == event_type,
+            NotificationEvent.event_key == escalated_key,
+        )
+    )
+    if escalated is not None:
+        return
+
+    escalation_subject = f'[{host.name}/{host.address}] Unresolved for 1 day - {event_type}'
+    escalation_body = (
+        f'User {username} still has an unresolved issue on {host.name} ({host.address}) after 1 day.\n\n'
+        f'Current reason:\n- {reason}\n'
+    )
+    if send_email(lifu_email, escalation_subject, escalation_body):
         db.add(
             NotificationEvent(
                 host_id=host.id,
                 username=username,
                 event_type=event_type,
-                event_key=event_key,
-                sent_at=datetime.utcnow(),
+                event_key=escalated_key,
+                sent_at=now,
             )
         )
+
+
+def _clear_resolved_issue_events(db: Session, host_id: int, active_issues: set[tuple[str, str]]) -> None:
+    tracked_event_types = (
+        'home_user_storage_over_1_5tb',
+        'gpu_count_over_8',
+        'avg_util_8h_40_70',
+        'avg_util_8h_below_40_killed',
+    )
+    existing_events = db.scalars(
+        select(NotificationEvent).where(
+            NotificationEvent.host_id == host_id,
+            NotificationEvent.event_type.in_(tracked_event_types),
+            NotificationEvent.event_key.in_(('active', 'escalated')),
+        )
+    ).all()
+    for event in existing_events:
+        if (event.username, event.event_type) not in active_issues:
+            db.delete(event)
 
 
 def build_notification_email(
@@ -416,8 +477,8 @@ def build_notification_email(
         'Please complete this form and explain why this happened:\n'
         f'{settings.incident_form_url}\n\n'
         'Required fields in your response:\n'
-        '1) Experiment name\n'
-        '2) Justification\n'
+        '1) Job name / experiment name\n'
+        '2) Business justification\n'
         '3) Expected end time\n'
     )
     return subject, body

@@ -221,16 +221,18 @@ def collect_host_snapshot(
         raise
     pid_users = json.loads(pid_users_raw or '{}')
     storage_used_bytes = int(storage_used_raw or 0)
-    home_user_used_bytes: dict[str, int] = {}
-    for row in home_user_usage_raw.splitlines():
-        parts = row.strip().split(None, 1)
-        if len(parts) != 2:
-            continue
-        size_text, path = parts
-        if not size_text.isdigit():
-            continue
-        username = path.rstrip('/').split('/')[-1]
-        home_user_used_bytes[username] = int(size_text)
+    home_user_used_bytes: dict[str, int] | None = None
+    if include_home_user_usage:
+        home_user_used_bytes = {}
+        for row in home_user_usage_raw.splitlines():
+            parts = row.strip().split(None, 1)
+            if len(parts) != 2:
+                continue
+            size_text, path = parts
+            if not size_text.isdigit():
+                continue
+            username = path.rstrip('/').split('/')[-1]
+            home_user_used_bytes[username] = int(size_text)
 
     uuid_to_users: dict[str, list[str]] = {}
     uuid_to_count: dict[str, int] = {}
