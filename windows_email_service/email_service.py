@@ -1,8 +1,9 @@
 """
 Windows Email Service for GPU Monitor.
 
-Polls the remote GPU Monitor server for pending emails in the outbox,
-sends them via SMTP, and reports delivery status back to the server.
+Connects to the remote server (165) via SSH, reads the email_outbox table
+directly from the SQLite database, sends pending emails via SMTP, and
+updates the database to mark them as sent/failed.
 
 Run:
     python email_service.py
@@ -10,13 +11,14 @@ Run:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import smtplib
 import time
 from email.message import EmailMessage
 
-import requests
+import paramiko
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -28,7 +30,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger('email_service')
 
-REMOTE_SERVER_URL = os.getenv('REMOTE_SERVER_URL', 'http://10.193.104.165:8000').rstrip('/')
+SSH_HOST = os.getenv('SSH_HOST', '10.193.104.165')
+SSH_PORT = int(os.getenv('SSH_PORT', '22'))
+SSH_USERNAME = os.getenv('SSH_USERNAME', 'lifu')
+SSH_PASSWORD = os.getenv('SSH_PASSWORD', '')
+REMOTE_DB_PATH = os.getenv('REMOTE_DB_PATH', '/home/lifu/workspace/GPUMonitor/data/gpu_monitor.db')
+
 SMTP_HOST = os.getenv('SMTP_HOST', 'smtp.gmail.com')
 SMTP_PORT = int(os.getenv('SMTP_PORT', '587'))
 SMTP_USERNAME = os.getenv('SMTP_USERNAME', '')
@@ -56,69 +63,107 @@ def send_email(to_email: str, subject: str, body: str, cc_email: str | None = No
         smtp.send_message(message)
 
 
-def fetch_pending_emails() -> list[dict]:
-    """Fetch pending emails from the remote server's outbox API."""
-    url = f'{REMOTE_SERVER_URL}/api/email-outbox/pending'
-    response = requests.get(url, timeout=15)
-    response.raise_for_status()
-    return response.json()
+def _ssh_exec(client: paramiko.SSHClient, command: str) -> str:
+    """Execute a command over SSH and return stdout. Raises on non-zero exit."""
+    _, stdout, stderr = client.exec_command(command, timeout=15)
+    exit_code = stdout.channel.recv_exit_status()
+    out = stdout.read().decode('utf-8', errors='replace').strip()
+    if exit_code != 0:
+        err = stderr.read().decode('utf-8', errors='replace').strip()
+        raise RuntimeError(f'SSH command failed (exit {exit_code}): {err}')
+    return out
 
 
-def mark_sent(email_id: int) -> None:
-    """Mark an email as sent on the remote server."""
-    url = f'{REMOTE_SERVER_URL}/api/email-outbox/{email_id}/mark-sent'
-    response = requests.post(url, timeout=15)
-    response.raise_for_status()
+def _connect_ssh() -> paramiko.SSHClient:
+    """Create and return an SSH connection to the remote server."""
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.connect(
+        hostname=SSH_HOST,
+        port=SSH_PORT,
+        username=SSH_USERNAME,
+        password=SSH_PASSWORD,
+        timeout=10,
+    )
+    return client
 
 
-def mark_failed(email_id: int, error_message: str) -> None:
-    """Mark an email as failed on the remote server."""
-    url = f'{REMOTE_SERVER_URL}/api/email-outbox/{email_id}/mark-failed'
-    response = requests.post(url, json={'error_message': error_message}, timeout=15)
-    response.raise_for_status()
+def fetch_pending_emails(client: paramiko.SSHClient) -> list[dict]:
+    """Query the remote SQLite database for pending emails via SSH."""
+    query = "SELECT id, to_email, cc_email, subject, body FROM email_outbox WHERE status = 'pending' ORDER BY created_at LIMIT 50;"
+    command = f'sqlite3 -json "{REMOTE_DB_PATH}" "{query}"'
+    output = _ssh_exec(client, command)
+    if not output:
+        return []
+    return json.loads(output)
+
+
+def mark_sent(client: paramiko.SSHClient, email_id: int) -> None:
+    """Mark an email as sent in the remote database."""
+    query = f"UPDATE email_outbox SET status = 'sent', sent_at = datetime('now') WHERE id = {email_id};"
+    command = f'sqlite3 "{REMOTE_DB_PATH}" "{query}"'
+    _ssh_exec(client, command)
+
+
+def mark_failed(client: paramiko.SSHClient, email_id: int, error_message: str) -> None:
+    """Mark an email as failed in the remote database."""
+    safe_msg = error_message.replace("'", "''")[:500]
+    query = f"UPDATE email_outbox SET status = 'failed', error_message = '{safe_msg}' WHERE id = {email_id};"
+    command = f'sqlite3 "{REMOTE_DB_PATH}" "{query}"'
+    _ssh_exec(client, command)
 
 
 def process_pending_emails() -> int:
-    """Fetch and send all pending emails. Returns number of emails processed."""
+    """Connect via SSH, fetch pending emails, send them, update status. Returns count sent."""
     try:
-        pending = fetch_pending_emails()
+        client = _connect_ssh()
     except Exception:
-        logger.exception('Failed to fetch pending emails from %s', REMOTE_SERVER_URL)
+        logger.exception('Failed to SSH into %s', SSH_HOST)
         return 0
 
-    if not pending:
-        return 0
-
-    logger.info('Found %d pending email(s)', len(pending))
-    sent_count = 0
-
-    for item in pending:
-        email_id = item['id']
-        to_email = item['to_email']
-        subject = item['subject']
-        body = item['body']
-        cc_email = item.get('cc_email')
-
+    try:
         try:
-            send_email(to_email, subject, body, cc_email=cc_email)
-            logger.info('Sent email #%d to %s: %s', email_id, to_email, subject)
-            mark_sent(email_id)
-            sent_count += 1
-        except Exception as exc:
-            error_msg = f'{type(exc).__name__}: {exc}'
-            logger.error('Failed to send email #%d to %s: %s', email_id, to_email, error_msg)
-            try:
-                mark_failed(email_id, error_msg)
-            except Exception:
-                logger.exception('Failed to mark email #%d as failed on remote server', email_id)
+            pending = fetch_pending_emails(client)
+        except Exception:
+            logger.exception('Failed to query pending emails from remote DB')
+            return 0
 
-    return sent_count
+        if not pending:
+            return 0
+
+        logger.info('Found %d pending email(s)', len(pending))
+        sent_count = 0
+
+        for item in pending:
+            email_id = item['id']
+            to_email = item['to_email']
+            subject = item['subject']
+            body = item['body']
+            cc_email = item.get('cc_email') or None
+
+            try:
+                send_email(to_email, subject, body, cc_email=cc_email)
+                logger.info('Sent email #%d to %s: %s', email_id, to_email, subject)
+                mark_sent(client, email_id)
+                sent_count += 1
+            except Exception as exc:
+                error_msg = f'{type(exc).__name__}: {exc}'
+                logger.error('Failed to send email #%d to %s: %s', email_id, to_email, error_msg)
+                try:
+                    mark_failed(client, email_id, error_msg)
+                except Exception:
+                    logger.exception('Failed to mark email #%d as failed in remote DB', email_id)
+
+        return sent_count
+    finally:
+        client.close()
 
 
 def run_service() -> None:
     """Main loop: poll for pending emails and send them."""
     logger.info('=== GPU Monitor Windows Email Service ===')
-    logger.info('Remote server: %s', REMOTE_SERVER_URL)
+    logger.info('Remote host: %s (SSH)', SSH_HOST)
+    logger.info('Remote DB: %s', REMOTE_DB_PATH)
     logger.info('SMTP host: %s:%d (TLS=%s)', SMTP_HOST, SMTP_PORT, SMTP_USE_TLS)
     logger.info('From email: %s', SMTP_FROM_EMAIL)
     logger.info('Poll interval: %d seconds', POLL_INTERVAL_SECONDS)

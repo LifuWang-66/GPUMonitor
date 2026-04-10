@@ -3,13 +3,13 @@ Test script for the Windows Email Service.
 
 Verifies that:
 1. SMTP credentials are valid and email can be sent
-2. The remote server outbox API is reachable
-3. End-to-end: queue an email on the remote server and send it
+2. SSH + SQLite connectivity to the remote server works
+3. End-to-end: insert a test email, send it, mark it sent
 
 Usage:
     python test_email.py                     # run all tests
     python test_email.py smtp                # test SMTP only
-    python test_email.py api                 # test API connectivity only
+    python test_email.py ssh                 # test SSH + DB connectivity only
     python test_email.py e2e                 # test end-to-end flow
 """
 
@@ -18,11 +18,14 @@ from __future__ import annotations
 import sys
 
 from email_service import (
-    REMOTE_SERVER_URL,
+    REMOTE_DB_PATH,
     SMTP_FROM_EMAIL,
     SMTP_HOST,
     SMTP_PORT,
     SMTP_USE_TLS,
+    SSH_HOST,
+    _connect_ssh,
+    _ssh_exec,
     fetch_pending_emails,
     mark_sent,
     send_email,
@@ -52,66 +55,111 @@ def test_smtp() -> bool:
         return False
 
 
-def test_api() -> bool:
-    """Test connectivity to the remote server outbox API."""
-    print(f'[API TEST] Fetching pending emails from {REMOTE_SERVER_URL}')
+def test_ssh() -> bool:
+    """Test SSH connectivity and SQLite database access on the remote server."""
+    print(f'[SSH TEST] Connecting to {SSH_HOST} via SSH...')
 
     try:
-        pending = fetch_pending_emails()
-        print(f'[API TEST] SUCCESS - {len(pending)} pending email(s) in outbox.')
+        client = _connect_ssh()
+    except Exception as exc:
+        print(f'[SSH TEST] FAILED to connect - {type(exc).__name__}: {exc}')
+        return False
+
+    try:
+        # Check sqlite3 is available
+        version = _ssh_exec(client, 'sqlite3 --version')
+        print(f'[SSH TEST] sqlite3 version: {version}')
+
+        # Check database file exists
+        check = _ssh_exec(client, f'test -f "{REMOTE_DB_PATH}" && echo "exists" || echo "missing"')
+        if check != 'exists':
+            print(f'[SSH TEST] FAILED - Database not found at {REMOTE_DB_PATH}')
+            return False
+        print(f'[SSH TEST] Database found at {REMOTE_DB_PATH}')
+
+        # Check email_outbox table exists
+        tables = _ssh_exec(client, f'sqlite3 "{REMOTE_DB_PATH}" ".tables"')
+        if 'email_outbox' not in tables:
+            print(f'[SSH TEST] WARNING - email_outbox table not found. Tables: {tables}')
+            print('[SSH TEST] The main app needs to be restarted to create the table.')
+            return False
+
+        # Query pending emails
+        pending = fetch_pending_emails(client)
+        print(f'[SSH TEST] SUCCESS - {len(pending)} pending email(s) in outbox.')
         for item in pending:
             print(f'  - #{item["id"]} to={item["to_email"]} subject={item["subject"][:60]}')
         return True
     except Exception as exc:
-        print(f'[API TEST] FAILED - {type(exc).__name__}: {exc}')
+        print(f'[SSH TEST] FAILED - {type(exc).__name__}: {exc}')
         return False
+    finally:
+        client.close()
 
 
 def test_e2e() -> bool:
-    """End-to-end test: fetch pending emails, send the first one, mark it sent."""
-    print(f'[E2E TEST] Fetching pending emails from {REMOTE_SERVER_URL}')
+    """End-to-end: insert a test email into outbox, send it, mark it sent."""
+    print(f'[E2E TEST] Connecting to {SSH_HOST} via SSH...')
 
     try:
-        pending = fetch_pending_emails()
+        client = _connect_ssh()
     except Exception as exc:
-        print(f'[E2E TEST] FAILED to fetch - {type(exc).__name__}: {exc}')
+        print(f'[E2E TEST] FAILED to connect - {type(exc).__name__}: {exc}')
         return False
 
-    if not pending:
-        print('[E2E TEST] No pending emails in outbox. Queue one from the main app first.')
-        print('[E2E TEST] SKIPPED')
-        return True
-
-    item = pending[0]
-    email_id = item['id']
-    print(f'[E2E TEST] Sending email #{email_id} to {item["to_email"]}: {item["subject"][:60]}')
-
     try:
-        send_email(
-            to_email=item['to_email'],
-            subject=item['subject'],
-            body=item['body'],
-            cc_email=item.get('cc_email'),
+        # Insert a test email into the outbox
+        insert_sql = (
+            "INSERT INTO email_outbox (to_email, subject, body, status, created_at) "
+            f"VALUES ('{SMTP_FROM_EMAIL}', "
+            "'[TEST] GPU Monitor E2E Test', "
+            "'This is an end-to-end test from the Windows Email Service.', "
+            "'pending', datetime('now'));"
         )
-        print(f'[E2E TEST] Email #{email_id} sent successfully.')
+        _ssh_exec(client, f'sqlite3 "{REMOTE_DB_PATH}" "{insert_sql}"')
+        print('[E2E TEST] Inserted test email into outbox.')
+
+        # Fetch it back
+        pending = fetch_pending_emails(client)
+        if not pending:
+            print('[E2E TEST] FAILED - No pending emails found after insert.')
+            return False
+
+        item = pending[-1]  # last one should be the one we just inserted
+        email_id = item['id']
+        print(f'[E2E TEST] Sending email #{email_id} to {item["to_email"]}: {item["subject"][:60]}')
+
+        try:
+            send_email(
+                to_email=item['to_email'],
+                subject=item['subject'],
+                body=item['body'],
+                cc_email=item.get('cc_email') or None,
+            )
+            print(f'[E2E TEST] Email #{email_id} sent successfully.')
+        except Exception as exc:
+            print(f'[E2E TEST] FAILED to send - {type(exc).__name__}: {exc}')
+            return False
+
+        try:
+            mark_sent(client, email_id)
+            print(f'[E2E TEST] Email #{email_id} marked as sent in remote DB.')
+        except Exception as exc:
+            print(f'[E2E TEST] WARNING - sent but failed to mark in DB: {type(exc).__name__}: {exc}')
+
+        print('[E2E TEST] SUCCESS')
+        return True
     except Exception as exc:
-        print(f'[E2E TEST] FAILED to send - {type(exc).__name__}: {exc}')
+        print(f'[E2E TEST] FAILED - {type(exc).__name__}: {exc}')
         return False
-
-    try:
-        mark_sent(email_id)
-        print(f'[E2E TEST] Email #{email_id} marked as sent on remote server.')
-    except Exception as exc:
-        print(f'[E2E TEST] WARNING - sent but failed to mark on server: {type(exc).__name__}: {exc}')
-
-    print('[E2E TEST] SUCCESS')
-    return True
+    finally:
+        client.close()
 
 
 def main() -> None:
     tests = {
         'smtp': test_smtp,
-        'api': test_api,
+        'ssh': test_ssh,
         'e2e': test_e2e,
     }
 
