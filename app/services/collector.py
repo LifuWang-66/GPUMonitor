@@ -8,6 +8,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.db import commit_with_retry
 from app.models import CurrentGpuStatus, DailyGpuAggregate, DailyUserAggregate, Host, NotificationEvent, UserProfile, UserUtilizationSample
 from app.schemas import CurrentGpuResponse
 from app.services.analytics import snapshot_to_current_status
@@ -50,7 +51,7 @@ def ensure_hosts(db: Session) -> list[Host]:
             host.name = item['name']
             host.enabled = True
         hosts.append(host)
-    db.commit()
+    commit_with_retry(db)
     return hosts
 
 
@@ -100,7 +101,7 @@ def refresh_current_status_only(db: Session, allowed_hosts: list[str]) -> tuple[
             _upsert_current_status_snapshot(db, host, snapshot)
         except Exception as exc:  # noqa: BLE001
             errors.append(f'Failed {address}: {exc}')
-    db.commit()
+    commit_with_retry(db)
     refreshed = db.execute(
         select(CurrentGpuStatus, Host)
         .join(Host, CurrentGpuStatus.host_id == Host.id)
@@ -151,7 +152,7 @@ def run_collection(db: Session) -> list[str]:
             except Exception as exc:  # noqa: BLE001
                 messages.append(f'Failed {host.address}: {exc}')
         cleanup_old_data(db)
-        db.commit()
+        commit_with_retry(db)
         return messages
     finally:
         RUN_COLLECTION_LOCK.release()
