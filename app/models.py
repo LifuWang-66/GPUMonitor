@@ -86,6 +86,18 @@ class UserUtilizationSample(Base):
     average_gpu_utilization: Mapped[float] = mapped_column(Float, default=0, nullable=False)
 
 
+class ProcessUtilizationSample(Base):
+    __tablename__ = 'process_utilization_samples'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    host_id: Mapped[int] = mapped_column(ForeignKey('hosts.id'), nullable=False, index=True)
+    pid: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    username: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    gpu_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    sampled_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    gpu_utilization: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+
+
 class NotificationEvent(Base):
     __tablename__ = 'notification_events'
     __table_args__ = (UniqueConstraint('host_id', 'username', 'event_type', 'event_key', name='uq_notification_dedupe'),)
