@@ -11,7 +11,7 @@ from app.config import get_settings
 from app.models import CurrentGpuStatus, DailyGpuAggregate, DailyUserAggregate, Host, NotificationEvent, UserProfile, UserUtilizationSample
 from app.schemas import CurrentGpuResponse
 from app.services.analytics import snapshot_to_current_status
-from app.services.notifications import send_email
+from app.services.notifications import queue_email, send_email
 from app.services.ssh_client import HostSnapshot, SshCredentials, collect_host_snapshot, kill_user_gpu_processes
 
 settings = get_settings()
@@ -397,7 +397,7 @@ def _notify_issue_with_escalation(
     )
     if existing is None:
         subject, body = build_notification_email(host.name, host.address, username, event_type, reason)
-        if send_email(email, subject, body, cc_email=cc_email):
+        if queue_email(db, email, subject, body, cc_email=cc_email):
             db.add(
                 NotificationEvent(
                     host_id=host.id,
@@ -431,7 +431,7 @@ def _notify_issue_with_escalation(
         f'User {username} still has an unresolved issue on {host.name} ({host.address}) after 1 day.\n\n'
         f'Current reason:\n- {reason}\n'
     )
-    if send_email(lifu_email, escalation_subject, escalation_body):
+    if queue_email(db, lifu_email, escalation_subject, escalation_body):
         db.add(
             NotificationEvent(
                 host_id=host.id,
