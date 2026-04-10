@@ -96,3 +96,17 @@ class NotificationEvent(Base):
     event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     event_key: Mapped[str] = mapped_column(String(128), nullable=False)
     sent_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class EmailOutbox(Base):
+    __tablename__ = 'email_outbox'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    to_email: Mapped[str] = mapped_column(String(320), nullable=False)
+    cc_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    subject: Mapped[str] = mapped_column(String(500), nullable=False)
+    body: Mapped[str] = mapped_column(String(5000), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default='pending', nullable=False, index=True)
+    error_message: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

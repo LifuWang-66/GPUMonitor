@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
@@ -14,9 +15,12 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import get_settings
 from app.db import Base, SessionLocal, engine, get_db
-from app.models import Host, UserProfile
+from app.models import EmailOutbox, Host, UserProfile
 from app.schemas import (
     CredentialCheckRequest,
+    EmailOutboxItem,
+    EmailOutboxMarkRequest,
+    EmailOutboxMarkResponse,
     HostAccessResult,
     SessionResponse,
     TestEmailRequest,
@@ -269,3 +273,47 @@ def api_test_policy_email(payload: TestPolicyEmailRequest, request: Request, db:
         simulated_max_utilization=payload.simulated_max_utilization,
         detail='Policy-style test email sent.',
     )
+
+
+@app.get('/api/email-outbox/pending', response_model=list[EmailOutboxItem])
+def api_get_pending_emails(limit: int = 50, db: Session = Depends(get_db)):
+    rows = db.scalars(
+        select(EmailOutbox)
+        .where(EmailOutbox.status == 'pending')
+        .order_by(EmailOutbox.created_at)
+        .limit(limit)
+    ).all()
+    return [
+        EmailOutboxItem(
+            id=row.id,
+            to_email=row.to_email,
+            cc_email=row.cc_email,
+            subject=row.subject,
+            body=row.body,
+            status=row.status,
+            created_at=row.created_at,
+        )
+        for row in rows
+    ]
+
+
+@app.post('/api/email-outbox/{email_id}/mark-sent', response_model=EmailOutboxMarkResponse)
+def api_mark_email_sent(email_id: int, db: Session = Depends(get_db)):
+    row = db.get(EmailOutbox, email_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f'Email {email_id} not found.')
+    row.status = 'sent'
+    row.sent_at = datetime.utcnow()
+    db.commit()
+    return EmailOutboxMarkResponse(id=email_id, status='sent', detail='Marked as sent.')
+
+
+@app.post('/api/email-outbox/{email_id}/mark-failed', response_model=EmailOutboxMarkResponse)
+def api_mark_email_failed(email_id: int, payload: EmailOutboxMarkRequest, db: Session = Depends(get_db)):
+    row = db.get(EmailOutbox, email_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f'Email {email_id} not found.')
+    row.status = 'failed'
+    row.error_message = payload.error_message
+    db.commit()
+    return EmailOutboxMarkResponse(id=email_id, status='failed', detail='Marked as failed.')

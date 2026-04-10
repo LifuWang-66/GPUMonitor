@@ -105,3 +105,23 @@ class UserSummaryResponse(BaseModel):
     average_gpu_utilization: float
     daily_average_gpu_hours: float
     server_breakdown: list[UserServerBreakdown]
+
+
+class EmailOutboxItem(BaseModel):
+    id: int
+    to_email: str
+    cc_email: str | None = None
+    subject: str
+    body: str
+    status: str
+    created_at: datetime
+
+
+class EmailOutboxMarkRequest(BaseModel):
+    error_message: str | None = None
+
+
+class EmailOutboxMarkResponse(BaseModel):
+    id: int
+    status: str
+    detail: str

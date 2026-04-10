@@ -4,6 +4,8 @@ import logging
 import smtplib
 from email.message import EmailMessage
 
+from sqlalchemy.orm import Session
+
 from app.config import get_settings
 
 settings = get_settings()
@@ -29,4 +31,13 @@ def send_email(to_email: str, subject: str, body: str, cc_email: str | None = No
         if settings.smtp_username:
             smtp.login(settings.smtp_username, settings.smtp_password or '')
         smtp.send_message(message)
+    return True
+
+
+def queue_email(db: Session, to_email: str, subject: str, body: str, cc_email: str | None = None) -> bool:
+    from app.models import EmailOutbox
+
+    db.add(EmailOutbox(to_email=to_email, cc_email=cc_email, subject=subject, body=body))
+    db.flush()
+    logger.info('Queued email to %s with subject: %s', to_email, subject)
     return True
