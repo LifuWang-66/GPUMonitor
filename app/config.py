@@ -1,25 +1,12 @@
 from functools import lru_cache
-from pathlib import Path
 from typing import List
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-ENV_CANDIDATES = (
-    Path('.env'),
-    Path(__file__).resolve().parents[1] / '.env',
-    Path(__file__).resolve().parents[2] / '.env',
-    Path(__file__).resolve().parents[3] / '.env',
-)
-
-
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=tuple(str(path) for path in ENV_CANDIDATES),
-        env_file_encoding='utf-8',
-        extra='ignore',
-    )
+    model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', extra='ignore')
 
     app_name: str = 'GPU Monitor'
     environment: str = 'development'

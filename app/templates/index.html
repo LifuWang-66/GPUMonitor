@@ -24,6 +24,31 @@
     </header>
 
     <main class="layout">
+      <section class="panel auth-panel">
+        <h2>Access Check</h2>
+        <p>Enter your own Linux account. The system will SSH into 5 GPU servers to verify which hosts you can access, and only show data from those hosts.</p>
+        <form id="access-form" method="post" action="/session/access">
+          <label>
+            Username
+            <input name="username" required placeholder="e.g. jinyang" value="{{ session_username or '' }}" />
+          </label>
+          <label>
+            Email
+            <input name="email" type="email" placeholder="Required on first login; optional later to keep current email" value="{{ session_email or '' }}" />
+          </label>
+          <label>
+            Password
+            <input name="password" type="password" placeholder="Leave empty if SSH key is already configured" />
+          </label>
+          <button type="submit">Validate and enter dashboard</button>
+        </form>
+        <div class="host-tags">
+          {% for host in host_aliases %}
+          <span>{{ host.name }} · {{ host.address }}</span>
+          {% endfor %}
+        </div>
+      </section>
+
       <section class="panel overview-panel">
         <div class="section-title-row">
           <div>
