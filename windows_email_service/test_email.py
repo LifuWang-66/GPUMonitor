@@ -5,12 +5,14 @@ Verifies that:
 1. SMTP credentials are valid and email can be sent
 2. SSH + SQLite connectivity to the remote server works
 3. End-to-end: insert a test email, send it, mark it sent
+4. Lifu email: look up lifu's email from DB and send a test email to it
 
 Usage:
     python test_email.py                     # run all tests
     python test_email.py smtp                # test SMTP only
     python test_email.py ssh                 # test SSH + DB connectivity only
     python test_email.py e2e                 # test end-to-end flow
+    python test_email.py lifu                # fetch lifu's email from DB, send test email
 """
 
 from __future__ import annotations
@@ -156,11 +158,55 @@ def test_e2e() -> bool:
         client.close()
 
 
+def test_lifu() -> bool:
+    """Fetch lifu's email from the remote DB and send a test email to it."""
+    print(f'[LIFU TEST] Connecting to {SSH_HOST} via SSH...')
+
+    try:
+        client = _connect_ssh()
+    except Exception as exc:
+        print(f'[LIFU TEST] FAILED to connect - {type(exc).__name__}: {exc}')
+        return False
+
+    try:
+        query = "SELECT email FROM user_profiles WHERE username = 'lifu' LIMIT 1;"
+        result = _ssh_exec(client, f'sqlite3 "{REMOTE_DB_PATH}" "{query}"')
+        if not result:
+            print('[LIFU TEST] FAILED - No email found for user "lifu" in user_profiles table.')
+            return False
+
+        lifu_email = result.strip()
+        print(f'[LIFU TEST] Found lifu email: {lifu_email}')
+
+        send_email(
+            to_email=lifu_email,
+            subject='[TEST] GPU Monitor Windows Email Service - Lifu Test',
+            body=(
+                'Hello lifu,\n\n'
+                'This is a test email from the GPU Monitor Windows Email Service '
+                'running on the Windows machine.\n\n'
+                'Your email was looked up from the user_profiles table in the '
+                'remote database. If you received this, the full pipeline works:\n'
+                '  1. SSH into 165\n'
+                '  2. Query SQLite database\n'
+                '  3. Send email via Gmail SMTP\n'
+            ),
+        )
+        print(f'[LIFU TEST] SUCCESS - Test email sent to {lifu_email}.')
+        return True
+    except Exception as exc:
+        print(f'[LIFU TEST] FAILED - {type(exc).__name__}: {exc}')
+        return False
+    finally:
+        client.close()
+
+
 def main() -> None:
     tests = {
         'smtp': test_smtp,
         'ssh': test_ssh,
         'e2e': test_e2e,
+        'lifu': test_lifu,
     }
 
     requested = sys.argv[1:] if len(sys.argv) > 1 else list(tests.keys())
