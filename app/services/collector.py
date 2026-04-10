@@ -8,11 +8,11 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import CurrentGpuStatus, DailyGpuAggregate, DailyUserAggregate, Host, NotificationEvent, UserProfile, UserUtilizationSample
+from app.models import CurrentGpuStatus, DailyGpuAggregate, DailyUserAggregate, Host, NotificationEvent, ProcessUtilizationSample, UserProfile, UserUtilizationSample
 from app.schemas import CurrentGpuResponse
 from app.services.analytics import snapshot_to_current_status
 from app.services.notifications import queue_email, send_email
-from app.services.ssh_client import HostSnapshot, SshCredentials, collect_host_snapshot, kill_user_gpu_processes
+from app.services.ssh_client import HostSnapshot, SshCredentials, collect_host_snapshot, kill_specific_gpu_processes, kill_user_gpu_processes
 
 settings = get_settings()
 HIGH_GPU_COUNT_THRESHOLD = 8
@@ -218,6 +218,7 @@ def upsert_snapshot(db: Session, host: Host, snapshot: HostSnapshot) -> None:
             db.execute(daily_user_upsert)
 
     _persist_user_utilization_samples(db, host, snapshot)
+    _persist_process_utilization_samples(db, host, snapshot)
 
 
 def _upsert_current_status_snapshot(db: Session, host: Host, snapshot: HostSnapshot) -> None:
@@ -264,6 +265,39 @@ def _persist_user_utilization_samples(db: Session, host: Host, snapshot: HostSna
         )
 
 
+def _persist_process_utilization_samples(db: Session, host: Host, snapshot: HostSnapshot) -> None:
+    sampled_at = snapshot.collected_at.replace(tzinfo=None)
+    for record in snapshot.gpu_records:
+        for pid, username in record.active_pids.items():
+            if username in settings.excluded_users:
+                continue
+            db.add(
+                ProcessUtilizationSample(
+                    host_id=host.id,
+                    pid=pid,
+                    username=username,
+                    gpu_index=record.gpu_index,
+                    sampled_at=sampled_at,
+                    gpu_utilization=record.utilization_gpu,
+                )
+            )
+
+
+def _get_eight_hour_max_util_by_pid(db: Session, host_id: int, pid: int, username: str, now_naive: datetime) -> tuple[float, int]:
+    since = now_naive - EIGHT_HOURS
+    rows = db.scalars(
+        select(ProcessUtilizationSample.gpu_utilization).where(
+            ProcessUtilizationSample.host_id == host_id,
+            ProcessUtilizationSample.pid == pid,
+            ProcessUtilizationSample.username == username,
+            ProcessUtilizationSample.sampled_at >= since,
+        )
+    ).all()
+    if not rows:
+        return -1.0, 0
+    return float(max(rows)), len(rows)
+
+
 def _evaluate_and_handle_user_alerts(db: Session, host: Host, snapshot: HostSnapshot, credentials: SshCredentials) -> None:
     lifu_profile = db.scalar(select(UserProfile).where(UserProfile.username == 'lifu'))
     cc_email = lifu_profile.email if lifu_profile and lifu_profile.email else None
@@ -290,19 +324,26 @@ def _evaluate_and_handle_user_alerts(db: Session, host: Host, snapshot: HostSnap
             active_issues.add((username, 'home_user_storage_over_1_5tb'))
 
     per_user_gpu_count: dict[str, int] = {}
+    per_user_pids: dict[str, set[int]] = {}
     for record in snapshot.gpu_records:
         for username in record.active_users:
             if username in settings.excluded_users:
                 continue
             per_user_gpu_count[username] = per_user_gpu_count.get(username, 0) + 1
+        for pid, username in record.active_pids.items():
+            if username in settings.excluded_users:
+                continue
+            per_user_pids.setdefault(username, set()).add(pid)
+
+    now_naive = snapshot.collected_at.replace(tzinfo=None)
+    required_samples = _required_samples_for_eight_hours()
 
     for username, gpu_count in per_user_gpu_count.items():
         profile = db.scalar(select(UserProfile).where(UserProfile.username == username))
         if not profile or not profile.email:
             continue
 
-        eight_hour_max, sample_count = _get_eight_hour_max_util(db, host.id, username, snapshot.collected_at.replace(tzinfo=None))
-        required_samples = _required_samples_for_eight_hours()
+        eight_hour_max, sample_count = _get_eight_hour_max_util(db, host.id, username, now_naive)
 
         if gpu_count > HIGH_GPU_COUNT_THRESHOLD:
             _notify_issue_with_escalation(
@@ -336,21 +377,37 @@ def _evaluate_and_handle_user_alerts(db: Session, host: Host, snapshot: HostSnap
             )
             active_issues.add((username, 'avg_util_8h_40_70'))
         elif eight_hour_max < LOW_UTIL_THRESHOLD and eight_hour_max >= 0:
-            kill_result = kill_user_gpu_processes(host.address, credentials, username)
-            _notify_issue_with_escalation(
-                db,
-                host,
-                username,
-                profile.email,
-                event_type='avg_util_8h_below_40_killed',
-                reason=(
-                    f'Your 8-hour max GPU utilization is {eight_hour_max:.2f}% (below 40%). '
-                    f'GPU processes were terminated. Killed PIDs: {kill_result or "none"}'
-                ),
-                cc_email=cc_email,
-                lifu_email=cc_email,
-            )
-            active_issues.add((username, 'avg_util_8h_below_40_killed'))
+            user_pids = per_user_pids.get(username, set())
+            pids_to_kill: list[int] = []
+            pids_spared: list[tuple[int, float]] = []
+            for pid in user_pids:
+                pid_max, pid_samples = _get_eight_hour_max_util_by_pid(db, host.id, pid, username, now_naive)
+                if pid_samples < required_samples:
+                    pids_spared.append((pid, pid_max))
+                    continue
+                if pid_max >= LOW_UTIL_THRESHOLD:
+                    pids_spared.append((pid, pid_max))
+                else:
+                    pids_to_kill.append(pid)
+
+            if pids_to_kill:
+                kill_result = kill_specific_gpu_processes(host.address, credentials, pids_to_kill)
+                spared_info = ', '.join(f'PID {p} ({u:.1f}%)' for p, u in pids_spared) if pids_spared else 'none'
+                _notify_issue_with_escalation(
+                    db,
+                    host,
+                    username,
+                    profile.email,
+                    event_type='avg_util_8h_below_40_killed',
+                    reason=(
+                        f'Your 8-hour max GPU utilization is {eight_hour_max:.2f}% (below 40%). '
+                        f'Killed PIDs: {kill_result or "none"}. '
+                        f'Spared PIDs (util >= 40% or insufficient samples): {spared_info}'
+                    ),
+                    cc_email=cc_email,
+                    lifu_email=cc_email,
+                )
+                active_issues.add((username, 'avg_util_8h_below_40_killed'))
 
     _clear_resolved_issue_events(db, host.id, active_issues)
 
@@ -490,5 +547,6 @@ def cleanup_old_data(db: Session) -> None:
     db.execute(delete(DailyUserAggregate).where(DailyUserAggregate.date < cutoff))
     sample_cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=7)
     db.execute(delete(UserUtilizationSample).where(UserUtilizationSample.sampled_at < sample_cutoff))
+    db.execute(delete(ProcessUtilizationSample).where(ProcessUtilizationSample.sampled_at < sample_cutoff))
     event_cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=90)
     db.execute(delete(NotificationEvent).where(NotificationEvent.sent_at < event_cutoff))
