@@ -87,6 +87,16 @@
             <h2>User GPU Usage</h2>
             <p class="muted section-note">By default, only the current user is shown. lifu and panzhou can view all users. Expand to see per-host details.</p>
           </div>
+          <div>
+            <label>
+              Time range
+              <select id="user-window-select">
+                {% for window in user_history_windows %}
+                <option value="{{ window }}" {% if window == 30 %}selected{% endif %}>{{ window }} day{% if window != 1 %}s{% endif %}</option>
+                {% endfor %}
+              </select>
+            </label>
+          </div>
         </div>
         <div id="user-table-wrapper" class="empty-state">User aggregates you are allowed to view will appear after login.</div>
       </section>
