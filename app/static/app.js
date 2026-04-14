@@ -4,6 +4,7 @@ const statusSummary = document.getElementById('status-summary');
 const gpuHistoryGrid = document.getElementById('gpu-history-grid');
 const userTableWrapper = document.getElementById('user-table-wrapper');
 const windowSelect = document.getElementById('window-select');
+const userWindowSelect = document.getElementById('user-window-select');
 const refreshButton = document.getElementById('refresh-button');
 const logoutButton = document.getElementById('logout-button');
 
@@ -326,13 +327,23 @@ async function refreshAll() {
     return;
   }
   const windowDays = Number(windowSelect.value);
+  const userWindowDays = Number(userWindowSelect?.value ?? windowSelect.value);
   const [current, gpuHistory, users] = await Promise.all([
     fetchJson('/api/status/current'),
     fetchJson(`/api/history/gpus?days=${windowDays}`),
-    fetchJson(`/api/history/users?days=${windowDays}`),
+    fetchJson(`/api/history/users?days=${userWindowDays}`),
   ]);
   renderCurrent(current);
   renderGpuHistory(gpuHistory);
+  renderUsers(users);
+}
+
+async function refreshUsers() {
+  if (!bootstrap.accessibleHosts.length) {
+    return;
+  }
+  const userWindowDays = Number(userWindowSelect?.value ?? 30);
+  const users = await fetchJson(`/api/history/users?days=${userWindowDays}`);
   renderUsers(users);
 }
 
@@ -353,6 +364,10 @@ refreshButton?.addEventListener('click', async () => {
 
 windowSelect?.addEventListener('change', () => {
   refreshAll().catch(error => alert(`Failed to load history: ${error.message}`));
+});
+
+userWindowSelect?.addEventListener('change', () => {
+  refreshUsers().catch(error => alert(`Failed to load user summary: ${error.message}`));
 });
 
 logoutButton?.addEventListener('click', async () => {

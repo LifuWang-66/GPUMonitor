@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     incident_form_url: str = 'https://docs.google.com/forms/d/1kAhrPkpn6kSLvp1n_d-UOCurd5c_X1IGXI-vqyIWBM8'
     excluded_usernames: str = 'dataset_model,lost+found,tempuser'
     allowed_history_windows: List[int] = Field(default_factory=lambda: [7, 14, 20, 30])
+    allowed_user_history_windows: List[int] = Field(default_factory=lambda: [1, 3, 7, 14, 30])
 
     @field_validator(
         'collector_ssh_username',
