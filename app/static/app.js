@@ -327,7 +327,7 @@ async function refreshAll() {
     return;
   }
   const windowDays = Number(windowSelect.value);
-  const userWindowDays = Number(userWindowSelect?.value ?? windowSelect.value);
+  const userWindowDays = Number(userWindowSelect?.value || windowSelect.value);
   const [current, gpuHistory, users] = await Promise.all([
     fetchJson('/api/status/current'),
     fetchJson(`/api/history/gpus?days=${windowDays}`),
@@ -342,7 +342,7 @@ async function refreshUsers() {
   if (!bootstrap.accessibleHosts.length) {
     return;
   }
-  const userWindowDays = Number(userWindowSelect?.value ?? 30);
+  const userWindowDays = Number(userWindowSelect?.value || windowSelect?.value || 30);
   const users = await fetchJson(`/api/history/users?days=${userWindowDays}`);
   renderUsers(users);
 }

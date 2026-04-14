@@ -72,7 +72,7 @@
               Time range
               <select id="window-select">
                 {% for window in history_windows %}
-                <option value="{{ window }}" {% if window == 30 %}selected{% endif %}>{{ window }} days</option>
+                <option value="{{ window }}" {% if window == 30 %}selected{% endif %}>{{ window }} day{% if window != 1 %}s{% endif %}</option>
                 {% endfor %}
               </select>
             </label>
@@ -91,7 +91,7 @@
             <label>
               Time range
               <select id="user-window-select">
-                {% for window in user_history_windows %}
+                {% for window in history_windows %}
                 <option value="{{ window }}" {% if window == 30 %}selected{% endif %}>{{ window }} day{% if window != 1 %}s{% endif %}</option>
                 {% endfor %}
               </select>
