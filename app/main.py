@@ -99,7 +99,6 @@ def home(request: Request):
             'app_name': settings.app_name,
             'host_aliases': settings.hosts,
             'history_windows': settings.allowed_history_windows,
-            'user_history_windows': settings.allowed_user_history_windows,
             'session_username': request.session.get('username'),
             'session_email': request.session.get('email'),
             'accessible_hosts': request.session.get('accessible_hosts', []),
@@ -195,7 +194,7 @@ def api_gpu_history(days: int = 30, allowed_hosts: list[str] = Depends(get_allow
 
 @app.get('/api/history/users')
 def api_user_history(request: Request, days: int = 30, allowed_hosts: list[str] = Depends(get_allowed_hosts), db: Session = Depends(get_db)):
-    if days not in settings.allowed_user_history_windows:
+    if days not in settings.allowed_history_windows:
         raise HTTPException(status_code=400, detail='不支持的时间窗口。')
     return get_user_history(db, allowed_hosts, days, viewer_username=request.session.get('username', ''))
 
