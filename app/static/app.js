@@ -5,10 +5,13 @@ const gpuHistoryGrid = document.getElementById('gpu-history-grid');
 const userTableWrapper = document.getElementById('user-table-wrapper');
 const storageWrapper = document.getElementById('storage-wrapper');
 const storageRefreshButton = document.getElementById('storage-refresh-button');
+const killJobsWrapper = document.getElementById('kill-jobs-wrapper');
+const jobsRefreshButton = document.getElementById('jobs-refresh-button');
 const windowSelect = document.getElementById('window-select');
 const userWindowSelect = document.getElementById('user-window-select');
 const refreshButton = document.getElementById('refresh-button');
 const logoutButton = document.getElementById('logout-button');
+const ADMIN_USERS = new Set(['lifu', 'panzhou']);
 
 function metricRow(label, value, progress = null) {
   const wrapper = document.createElement('div');
@@ -387,6 +390,94 @@ function renderStorage(items) {
   storageWrapper.appendChild(wrapper);
 }
 
+async function requestJobExtension(jobId, hours, reason) {
+  return fetchJson(`/api/jobs/${jobId}/extension`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hours, reason }),
+  });
+}
+
+async function killJobNow(jobId) {
+  return fetchJson(`/api/jobs/${jobId}/kill`, { method: 'POST' });
+}
+
+function renderKillJobs(items) {
+  if (!killJobsWrapper) return;
+  killJobsWrapper.innerHTML = '';
+  if (!items.length) {
+    killJobsWrapper.textContent = 'No jobs are currently marked for kill.';
+    killJobsWrapper.classList.add('empty-state');
+    return;
+  }
+  killJobsWrapper.classList.remove('empty-state');
+  const isAdmin = ADMIN_USERS.has(bootstrap.sessionUsername || '');
+  const table = document.createElement('table');
+  table.className = 'table compact-table';
+  table.innerHTML = `
+    <thead>
+      <tr>
+        ${isAdmin ? '<th>User</th>' : ''}
+        <th>PID</th>
+        <th>Machine</th>
+        <th>GPU</th>
+        <th>Util</th>
+        <th>Memory</th>
+        <th>Status</th>
+        <th>Kill at</th>
+        ${isAdmin ? '<th>Extension</th><th>Total run</th><th>Reason</th><th>Action</th>' : '<th>Request extension</th>'}
+      </tr>
+    </thead>
+    <tbody></tbody>
+  `;
+  const tbody = table.querySelector('tbody');
+  for (const item of items) {
+    const tr = document.createElement('tr');
+    const extensionDisplay = item.extended_until ? new Date(item.extended_until).toLocaleString() : '--';
+    const reasonDisplay = item.extension_reason || '--';
+    if (isAdmin) {
+      tr.innerHTML = `
+        <td>${item.username}</td>
+        <td>${item.pid}</td>
+        <td>${item.host_address}</td>
+        <td>${item.gpu_index}</td>
+        <td>${Number(item.utilization_gpu).toFixed(1)}%</td>
+        <td>${Number(item.memory_used_mb).toFixed(0)} MB</td>
+        <td>${item.status}</td>
+        <td>${new Date(item.kill_after).toLocaleString()}</td>
+        <td>${extensionDisplay}</td>
+        <td>${item.total_running_hours} h</td>
+        <td>${reasonDisplay}</td>
+        <td><button class="danger" data-kill-id="${item.id}">Kill now</button></td>
+      `;
+    } else {
+      tr.innerHTML = `
+        <td>${item.pid}</td>
+        <td>${item.host_address}</td>
+        <td>${item.gpu_index}</td>
+        <td>${Number(item.utilization_gpu).toFixed(1)}%</td>
+        <td>${Number(item.memory_used_mb).toFixed(0)} MB</td>
+        <td>${item.status}</td>
+        <td>${new Date(item.kill_after).toLocaleString()}</td>
+        <td>
+          <div class="extension-controls">
+            <select data-hours-id="${item.id}">
+              <option value="4">4 hours</option>
+              <option value="8">8 hours</option>
+              <option value="12">12 hours</option>
+              <option value="24">24 hours</option>
+            </select>
+            <input type="text" data-reason-id="${item.id}" placeholder="Reason" />
+            <button data-extend-id="${item.id}">Submit</button>
+          </div>
+        </td>
+      `;
+    }
+    tbody.appendChild(tr);
+  }
+  killJobsWrapper.appendChild(table);
+}
+
 async function fetchJson(url, options = {}) {
   const response = await fetch(url, options);
   if (!response.ok) {
@@ -402,16 +493,18 @@ async function refreshAll() {
   }
   const windowDays = Number(windowSelect.value);
   const userWindowDays = Number(userWindowSelect?.value || windowSelect.value);
-  const [current, gpuHistory, users, storage] = await Promise.all([
+  const [current, gpuHistory, users, storage, killJobs] = await Promise.all([
     fetchJson('/api/status/current'),
     fetchJson(`/api/history/gpus?days=${windowDays}`),
     fetchJson(`/api/history/users?days=${userWindowDays}`),
     fetchJson('/api/storage/users'),
+    fetchJson('/api/jobs/to-be-killed'),
   ]);
   renderCurrent(current);
   renderGpuHistory(gpuHistory);
   renderUsers(users);
   renderStorage(storage);
+  renderKillJobs(killJobs);
 }
 
 async function refreshUsers() {
@@ -461,6 +554,52 @@ storageRefreshButton?.addEventListener('click', async () => {
   } finally {
     storageRefreshButton.disabled = false;
     storageRefreshButton.textContent = originalLabel;
+  }
+});
+
+jobsRefreshButton?.addEventListener('click', async () => {
+  jobsRefreshButton.disabled = true;
+  try {
+    const rows = await fetchJson('/api/jobs/to-be-killed');
+    renderKillJobs(rows);
+  } catch (error) {
+    alert(`Jobs refresh failed: ${error.message}`);
+  } finally {
+    jobsRefreshButton.disabled = false;
+  }
+});
+
+killJobsWrapper?.addEventListener('click', async event => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  const killId = target.getAttribute('data-kill-id');
+  const extendId = target.getAttribute('data-extend-id');
+  if (killId) {
+    try {
+      await killJobNow(killId);
+      const rows = await fetchJson('/api/jobs/to-be-killed');
+      renderKillJobs(rows);
+    } catch (error) {
+      alert(`Kill failed: ${error.message}`);
+    }
+    return;
+  }
+  if (extendId) {
+    const hoursEl = killJobsWrapper.querySelector(`[data-hours-id="${extendId}"]`);
+    const reasonEl = killJobsWrapper.querySelector(`[data-reason-id="${extendId}"]`);
+    const hours = Number(hoursEl?.value || 4);
+    const reason = String(reasonEl?.value || '').trim();
+    if (!reason) {
+      alert('Please provide a reason for extension.');
+      return;
+    }
+    try {
+      await requestJobExtension(extendId, hours, reason);
+      const rows = await fetchJson('/api/jobs/to-be-killed');
+      renderKillJobs(rows);
+    } catch (error) {
+      alert(`Extension failed: ${error.message}`);
+    }
   }
 });
 

@@ -57,6 +57,7 @@ class GpuRecord:
     active_users: list[str]
     process_count: int
     active_pids: dict[int, str]  # pid -> username
+    active_pid_memory_mb: dict[int, float]  # pid -> process memory
 
 
 @dataclass
@@ -269,6 +270,7 @@ def collect_host_snapshot(
     uuid_to_users: dict[str, list[str]] = {}
     uuid_to_count: dict[str, int] = {}
     uuid_to_pids: dict[str, dict[int, str]] = {}
+    uuid_to_pid_memory: dict[str, dict[int, float]] = {}
     for row in process_output.splitlines():
         parts = [part.strip() for part in row.split(',')]
         if len(parts) < 2:
@@ -276,12 +278,16 @@ def collect_host_snapshot(
         gpu_uuid = parts[0]
         pid = parts[1]
         username = pid_users.get(pid)
+        memory_text = parts[2] if len(parts) > 2 else '0'
+        memory_mb = float(memory_text) if memory_text not in {'', 'N/A'} else 0.0
         if username:
             uuid_to_users.setdefault(gpu_uuid, [])
             if username not in uuid_to_users[gpu_uuid]:
                 uuid_to_users[gpu_uuid].append(username)
             if pid.isdigit():
-                uuid_to_pids.setdefault(gpu_uuid, {})[int(pid)] = username
+                pid_int = int(pid)
+                uuid_to_pids.setdefault(gpu_uuid, {})[pid_int] = username
+                uuid_to_pid_memory.setdefault(gpu_uuid, {})[pid_int] = memory_mb
         uuid_to_count[gpu_uuid] = uuid_to_count.get(gpu_uuid, 0) + 1
 
     gpu_records: list[GpuRecord] = []
@@ -302,6 +308,7 @@ def collect_host_snapshot(
                 active_users=uuid_to_users.get(gpu_uuid, []),
                 process_count=uuid_to_count.get(gpu_uuid, 0),
                 active_pids=uuid_to_pids.get(gpu_uuid, {}),
+                active_pid_memory_mb=uuid_to_pid_memory.get(gpu_uuid, {}),
             )
         )
 
