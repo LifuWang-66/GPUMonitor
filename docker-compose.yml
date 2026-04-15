@@ -1,0 +1,21 @@
+services:
+  gpu-monitor:
+    build: .
+    ports:
+      - '8000:8000'
+    environment:
+      SECRET_KEY: change-me-before-production
+      DATABASE_URL: sqlite:///./data/gpu_monitor.db
+      COLLECTOR_INTERVAL_MINUTES: 10
+      RETENTION_DAYS: 60
+      MONITOR_HOSTS: 10.193.104.165,10.193.104.170,10.193.104.181,10.193.104.182,10.193.104.186
+      MONITOR_HOST_ALIASES: PZU-104-165,PZU-104-170,PZU-104-181,PZU-104-182,PZU-104-186
+      EXCLUDED_USERNAMES: dataset_model,lost+found,tempuser
+      # Fill the collector credentials for the scheduled job:
+      COLLECTOR_SSH_USERNAME: ${COLLECTOR_SSH_USERNAME:-}
+      COLLECTOR_SSH_PASSWORD: ${COLLECTOR_SSH_PASSWORD:-}
+      COLLECTOR_SSH_KEY_PATH: ${COLLECTOR_SSH_KEY_PATH:-}
+    volumes:
+      - ./data:/app/data
+      - ${COLLECTOR_SSH_KEY_DIR:-./keys}:/keys:ro
+    restart: unless-stopped
