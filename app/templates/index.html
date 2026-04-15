@@ -111,6 +111,17 @@
         </div>
         <div id="storage-wrapper" class="empty-state">Storage usage will appear after login.</div>
       </section>
+
+      <section class="panel jobs-panel">
+        <div class="section-title-row">
+          <div>
+            <h2>Jobs To Be Killed (util &lt; 40)</h2>
+            <p class="muted section-note">Normal users see their own jobs only. lifu/panzhou can view all and kill directly.</p>
+          </div>
+          <button id="jobs-refresh-button" class="secondary">Refresh jobs</button>
+        </div>
+        <div id="kill-jobs-wrapper" class="empty-state">Jobs marked for kill will appear after login.</div>
+      </section>
     </main>
 
     <template id="gpu-card-template">

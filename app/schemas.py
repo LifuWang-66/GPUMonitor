@@ -140,3 +140,32 @@ class EmailOutboxMarkResponse(BaseModel):
     id: int
     status: str
     detail: str
+
+
+class JobKillCandidateItem(BaseModel):
+    id: int
+    host_name: str
+    host_address: str
+    pid: int
+    username: str
+    gpu_index: int
+    utilization_gpu: float
+    memory_used_mb: float
+    status: str
+    kill_after: datetime
+    extended_until: datetime | None = None
+    extension_hours: int | None = None
+    extension_reason: str | None = None
+    first_seen_at: datetime
+    total_running_hours: float
+
+
+class JobExtensionRequest(BaseModel):
+    hours: int
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class JobKillResponse(BaseModel):
+    id: int
+    status: str
+    detail: str

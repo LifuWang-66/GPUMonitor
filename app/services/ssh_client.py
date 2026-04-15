@@ -34,7 +34,42 @@ PID_USER_QUERY = (
 )
 HOME_USERS_QUERY = 'ls /home'
 STORAGE_QUERY = "df -B1 /home | awk 'NR==2 {print $3}'"
-HOME_USER_USAGE_QUERY = "du -sb /home/* 2>/dev/null || true"
+
+
+def _build_home_user_usage_query(excluded_users: set[str], sudo_password: str) -> str:
+    excluded_list = sorted(excluded_users)
+    return (
+        "python3 - <<'PY'\n"
+        "import os\n"
+        "import subprocess\n"
+        "\n"
+        f"excluded = set({excluded_list!r})\n"
+        f"sudo_password = {sudo_password!r}\n"
+        "paths = []\n"
+        "for name in os.listdir('/home'):\n"
+        "    if name in excluded:\n"
+        "        continue\n"
+        "    paths.append(os.path.join('/home', name))\n"
+        "if not paths:\n"
+        "    raise SystemExit(0)\n"
+        "\n"
+        "proc = subprocess.run(\n"
+        "    ['sudo', '-S', 'du', '-sb', *paths],\n"
+        "    input=(sudo_password + '\\n').encode(),\n"
+        "    stdout=subprocess.PIPE,\n"
+        "    stderr=subprocess.DEVNULL,\n"
+        "    check=False,\n"
+        ")\n"
+        "if proc.returncode != 0:\n"
+        "    proc = subprocess.run(\n"
+        "        ['du', '-sb', *paths],\n"
+        "        stdout=subprocess.PIPE,\n"
+        "        stderr=subprocess.DEVNULL,\n"
+        "        check=False,\n"
+        "    )\n"
+        "print(proc.stdout.decode(), end='')\n"
+        "PY"
+    )
 
 
 @dataclass
@@ -57,6 +92,7 @@ class GpuRecord:
     active_users: list[str]
     process_count: int
     active_pids: dict[int, str]  # pid -> username
+    active_pid_memory_mb: dict[int, float]  # pid -> process memory
 
 
 @dataclass
@@ -240,7 +276,14 @@ def collect_host_snapshot(
         process_output = _execute_command_with_client(client, PROCESS_QUERY)
         pid_users_raw = _execute_command_with_client(client, PID_USER_QUERY)
         storage_used_raw = _execute_command_with_client(client, STORAGE_QUERY)
-        home_user_usage_raw = _execute_command_with_client(client, HOME_USER_USAGE_QUERY) if include_home_user_usage else ''
+        home_user_usage_raw = (
+            _execute_command_with_client(
+                client,
+                _build_home_user_usage_query(settings.excluded_users, credentials.password or ''),
+            )
+            if include_home_user_usage
+            else ''
+        )
     except Exception:  # noqa: BLE001
         with _COLLECTOR_CLIENTS_LOCK:
             stale = _COLLECTOR_CLIENTS.pop(host_address, None)
@@ -269,6 +312,7 @@ def collect_host_snapshot(
     uuid_to_users: dict[str, list[str]] = {}
     uuid_to_count: dict[str, int] = {}
     uuid_to_pids: dict[str, dict[int, str]] = {}
+    uuid_to_pid_memory: dict[str, dict[int, float]] = {}
     for row in process_output.splitlines():
         parts = [part.strip() for part in row.split(',')]
         if len(parts) < 2:
@@ -276,12 +320,16 @@ def collect_host_snapshot(
         gpu_uuid = parts[0]
         pid = parts[1]
         username = pid_users.get(pid)
+        memory_text = parts[2] if len(parts) > 2 else '0'
+        memory_mb = float(memory_text) if memory_text not in {'', 'N/A'} else 0.0
         if username:
             uuid_to_users.setdefault(gpu_uuid, [])
             if username not in uuid_to_users[gpu_uuid]:
                 uuid_to_users[gpu_uuid].append(username)
             if pid.isdigit():
-                uuid_to_pids.setdefault(gpu_uuid, {})[int(pid)] = username
+                pid_int = int(pid)
+                uuid_to_pids.setdefault(gpu_uuid, {})[pid_int] = username
+                uuid_to_pid_memory.setdefault(gpu_uuid, {})[pid_int] = memory_mb
         uuid_to_count[gpu_uuid] = uuid_to_count.get(gpu_uuid, 0) + 1
 
     gpu_records: list[GpuRecord] = []
@@ -302,6 +350,7 @@ def collect_host_snapshot(
                 active_users=uuid_to_users.get(gpu_uuid, []),
                 process_count=uuid_to_count.get(gpu_uuid, 0),
                 active_pids=uuid_to_pids.get(gpu_uuid, {}),
+                active_pid_memory_mb=uuid_to_pid_memory.get(gpu_uuid, {}),
             )
         )
 
