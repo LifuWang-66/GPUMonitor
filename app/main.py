@@ -29,7 +29,7 @@ from app.schemas import (
     TestPolicyEmailResponse,
 )
 from app.services.analytics import get_current_status, get_gpu_history, get_user_history, get_user_storage
-from app.services.collector import build_notification_email, ensure_hosts, get_collector_credentials, refresh_current_status_only, run_collection
+from app.services.collector import build_notification_email, ensure_hosts, get_collector_credentials, refresh_current_status_only, refresh_user_storage, run_collection
 from app.services.notifications import send_email
 from app.services.ssh_client import SshCredentials, close_collector_connections, fetch_home_users, validate_host_access
 
@@ -213,6 +213,14 @@ def api_user_history(request: Request, days: int = 30, allowed_hosts: list[str] 
 @app.get('/api/storage/users')
 def api_user_storage(request: Request, allowed_hosts: list[str] = Depends(get_allowed_hosts), db: Session = Depends(get_db)):
     return get_user_storage(db, allowed_hosts, viewer_username=request.session.get('username', ''))
+
+
+@app.post('/api/storage/refresh')
+def api_refresh_storage(request: Request, allowed_hosts: list[str] = Depends(get_allowed_hosts), db: Session = Depends(get_db)):
+    hosts_updated, errors = refresh_user_storage(db, allowed_hosts)
+    viewer = request.session.get('username', '')
+    storage = get_user_storage(db, allowed_hosts, viewer_username=viewer)
+    return {'hosts_updated': hosts_updated, 'errors': errors, 'storage': storage}
 
 
 @app.post('/api/collector/run')

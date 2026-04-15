@@ -71,6 +71,32 @@ def collect_live_current_status(allowed_hosts: list[str]) -> tuple[list[CurrentG
     return snapshots, errors
 
 
+def refresh_user_storage(db: Session, allowed_hosts: list[str]) -> tuple[int, list[str]]:
+    """Force-collect per-user /home usage for the given hosts and persist it.
+
+    Bypasses the once-per-day scan gate so users can trigger it manually.
+    Returns (hosts_updated, errors).
+    """
+    credentials = get_collector_credentials()
+    if credentials is None:
+        return 0, ['Collector skipped: missing COLLECTOR_SSH_USERNAME configuration.']
+
+    host_rows = db.scalars(select(Host).where(Host.address.in_(allowed_hosts))).all()
+    updated = 0
+    errors: list[str] = []
+    today = datetime.now(timezone.utc).date()
+    for host in host_rows:
+        try:
+            snapshot = collect_host_snapshot(host.name, host.address, credentials, include_home_user_usage=True)
+            _persist_user_storage_usage(db, host, snapshot)
+            _LAST_HOME_USAGE_SCAN_DATE_BY_HOST[host.id] = today
+            updated += 1
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f'Failed {host.address}: {exc}')
+    db.commit()
+    return updated, errors
+
+
 def refresh_current_status_only(db: Session, allowed_hosts: list[str]) -> tuple[list[CurrentGpuResponse], list[str]]:
     credentials = get_collector_credentials()
     if credentials is None:
