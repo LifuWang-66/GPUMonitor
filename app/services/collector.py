@@ -8,7 +8,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import CurrentGpuStatus, DailyGpuAggregate, DailyUserAggregate, Host, NotificationEvent, ProcessUtilizationSample, UserProfile, UserStorageUsage, UserUtilizationSample
+from app.models import CurrentGpuStatus, DailyGpuAggregate, DailyUserAggregate, Host, JobKillCandidate, NotificationEvent, ProcessUtilizationSample, UserProfile, UserStorageUsage, UserUtilizationSample
 from app.schemas import CurrentGpuResponse
 from app.services.analytics import snapshot_to_current_status
 from app.services.notifications import queue_email, send_email
@@ -20,6 +20,7 @@ STORAGE_THRESHOLD_BYTES = int(1.5 * 1024 * 1024 * 1024 * 1024)
 LOW_UTIL_THRESHOLD = 40.0
 MID_UTIL_THRESHOLD = 70.0
 EIGHT_HOURS = timedelta(hours=8)
+KILL_GRACE_PERIOD = timedelta(hours=4)
 ESCALATION_AFTER = timedelta(days=1)
 RUN_COLLECTION_LOCK = threading.Lock()
 MIN_EIGHT_HOUR_SAMPLE_RATIO = 0.9
@@ -181,6 +182,7 @@ def run_collection(db: Session) -> list[str]:
                 )
                 upsert_snapshot(db, host, snapshot)
                 _evaluate_and_handle_user_alerts(db, host, snapshot, credentials)
+                _refresh_kill_candidates_and_enforce(db, host, snapshot, credentials)
                 db.commit()
                 messages.append(f'Collected {host.address}')
             except Exception as exc:  # noqa: BLE001
@@ -361,9 +363,81 @@ def _get_eight_hour_max_util_by_pid(db: Session, host_id: int, pid: int, usernam
     return float(max(rows)), len(rows)
 
 
+def _refresh_kill_candidates_and_enforce(db: Session, host: Host, snapshot: HostSnapshot, credentials: SshCredentials) -> None:
+    now_naive = snapshot.collected_at.replace(tzinfo=None)
+    exempt_users = settings.low_util_exempt_users
+    active_pid_details: dict[int, tuple[str, int, float, float]] = {}
+    for record in snapshot.gpu_records:
+        if record.utilization_gpu >= LOW_UTIL_THRESHOLD:
+            continue
+        for pid, username in record.active_pids.items():
+            if username in settings.excluded_users:
+                continue
+            if username in exempt_users:
+                continue
+            pid_memory = record.active_pid_memory_mb.get(pid, record.memory_used_mb)
+            active_pid_details[pid] = (username, record.gpu_index, record.utilization_gpu, pid_memory)
+
+    existing_candidates = db.scalars(
+        select(JobKillCandidate).where(
+            JobKillCandidate.host_id == host.id,
+            JobKillCandidate.status.in_(('pending', 'extended')),
+        )
+    ).all()
+    existing_by_pid = {item.pid: item for item in existing_candidates}
+
+    for pid, (username, gpu_index, util, memory_mb) in active_pid_details.items():
+        row = existing_by_pid.get(pid)
+        if row is None:
+            row = JobKillCandidate(
+                host_id=host.id,
+                pid=pid,
+                username=username,
+                gpu_index=gpu_index,
+                machine=host.address,
+                utilization_gpu=util,
+                memory_used_mb=memory_mb,
+                first_seen_at=now_naive,
+                last_seen_at=now_naive,
+                kill_after=now_naive + KILL_GRACE_PERIOD,
+                status='pending',
+            )
+            db.add(row)
+            continue
+        row.username = username
+        row.gpu_index = gpu_index
+        row.machine = host.address
+        row.utilization_gpu = util
+        row.memory_used_mb = memory_mb
+        row.last_seen_at = now_naive
+
+    active_pids = set(active_pid_details.keys())
+    for row in existing_candidates:
+        if row.pid not in active_pids:
+            row.status = 'resolved'
+
+    due_rows = [
+        row for row in existing_candidates
+        if row.pid in active_pids and (
+            (row.status == 'pending' and now_naive >= row.kill_after)
+            or (row.status == 'extended' and row.extended_until is not None and now_naive >= row.extended_until)
+        )
+    ]
+    if not due_rows:
+        return
+    kill_result = kill_specific_gpu_processes(host.address, credentials, [row.pid for row in due_rows])
+    killed_set = {int(pid) for pid in kill_result.split(',') if pid.strip().isdigit()}
+    for row in due_rows:
+        if row.pid in killed_set:
+            row.status = 'killed'
+            row.killed_at = now_naive
+            row.killed_by = 'system'
+
+
 def _evaluate_and_handle_user_alerts(db: Session, host: Host, snapshot: HostSnapshot, credentials: SshCredentials) -> None:
     lifu_profile = db.scalar(select(UserProfile).where(UserProfile.username == 'lifu'))
     cc_email = lifu_profile.email if lifu_profile and lifu_profile.email else None
+    exempt_users = settings.low_util_exempt_users
     active_issues: set[tuple[str, str]] = set()
 
     if snapshot.home_user_used_bytes is not None:
@@ -440,37 +514,24 @@ def _evaluate_and_handle_user_alerts(db: Session, host: Host, snapshot: HostSnap
             )
             active_issues.add((username, 'avg_util_8h_40_70'))
         elif eight_hour_max < LOW_UTIL_THRESHOLD and eight_hour_max >= 0:
+            if username in exempt_users:
+                continue
             user_pids = per_user_pids.get(username, set())
-            pids_to_kill: list[int] = []
-            pids_spared: list[tuple[int, float]] = []
-            for pid in user_pids:
-                pid_max, pid_samples = _get_eight_hour_max_util_by_pid(db, host.id, pid, username, now_naive)
-                if pid_samples < required_samples:
-                    pids_spared.append((pid, pid_max))
-                    continue
-                if pid_max >= LOW_UTIL_THRESHOLD:
-                    pids_spared.append((pid, pid_max))
-                else:
-                    pids_to_kill.append(pid)
-
-            if pids_to_kill:
-                kill_result = kill_specific_gpu_processes(host.address, credentials, pids_to_kill)
-                spared_info = ', '.join(f'PID {p} ({u:.1f}%)' for p, u in pids_spared) if pids_spared else 'none'
+            if user_pids:
                 _notify_issue_with_escalation(
                     db,
                     host,
                     username,
                     profile.email,
-                    event_type='avg_util_8h_below_40_killed',
+                    event_type='avg_util_8h_below_40_pending_kill',
                     reason=(
                         f'Your 8-hour max GPU utilization is {eight_hour_max:.2f}% (below 40%). '
-                        f'Killed PIDs: {kill_result or "none"}. '
-                        f'Spared PIDs (util >= 40% or insufficient samples): {spared_info}'
+                        'Your jobs are now marked for kill. Please request an extension in GPU Monitor if needed.'
                     ),
                     cc_email=cc_email,
                     lifu_email=cc_email,
                 )
-                active_issues.add((username, 'avg_util_8h_below_40_killed'))
+                active_issues.add((username, 'avg_util_8h_below_40_pending_kill'))
 
     _clear_resolved_issue_events(db, host.id, active_issues)
 
@@ -568,7 +629,7 @@ def _clear_resolved_issue_events(db: Session, host_id: int, active_issues: set[t
         'home_user_storage_over_1_5tb',
         'gpu_count_over_8',
         'avg_util_8h_40_70',
-        'avg_util_8h_below_40_killed',
+        'avg_util_8h_below_40_pending_kill',
     )
     existing_events = db.scalars(
         select(NotificationEvent).where(
