@@ -81,20 +81,27 @@ def refresh_user_storage(db: Session, allowed_hosts: list[str]) -> tuple[int, li
     if credentials is None:
         return 0, ['Collector skipped: missing COLLECTOR_SSH_USERNAME configuration.']
 
-    host_rows = db.scalars(select(Host).where(Host.address.in_(allowed_hosts))).all()
-    updated = 0
-    errors: list[str] = []
-    today = datetime.now(timezone.utc).date()
-    for host in host_rows:
-        try:
-            snapshot = collect_host_snapshot(host.name, host.address, credentials, include_home_user_usage=True)
-            _persist_user_storage_usage(db, host, snapshot)
-            _LAST_HOME_USAGE_SCAN_DATE_BY_HOST[host.id] = today
-            updated += 1
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f'Failed {host.address}: {exc}')
-    db.commit()
-    return updated, errors
+    if not RUN_COLLECTION_LOCK.acquire(blocking=False):
+        return 0, ['Storage refresh skipped: another collection run is already in progress.']
+
+    try:
+        host_rows = db.scalars(select(Host).where(Host.address.in_(allowed_hosts))).all()
+        updated = 0
+        errors: list[str] = []
+        today = datetime.now(timezone.utc).date()
+        for host in host_rows:
+            try:
+                snapshot = collect_host_snapshot(host.name, host.address, credentials, include_home_user_usage=True)
+                _persist_user_storage_usage(db, host, snapshot)
+                db.commit()
+                _LAST_HOME_USAGE_SCAN_DATE_BY_HOST[host.id] = today
+                updated += 1
+            except Exception as exc:  # noqa: BLE001
+                db.rollback()
+                errors.append(f'Failed {host.address}: {exc}')
+        return updated, errors
+    finally:
+        RUN_COLLECTION_LOCK.release()
 
 
 def refresh_current_status_only(db: Session, allowed_hosts: list[str]) -> tuple[list[CurrentGpuResponse], list[str]]:
@@ -124,9 +131,10 @@ def refresh_current_status_only(db: Session, allowed_hosts: list[str]) -> tuple[
                     f'proc={record.process_count}'
                 )
             _upsert_current_status_snapshot(db, host, snapshot)
+            db.commit()
         except Exception as exc:  # noqa: BLE001
+            db.rollback()
             errors.append(f'Failed {address}: {exc}')
-    db.commit()
     refreshed = db.execute(
         select(CurrentGpuStatus, Host)
         .join(Host, CurrentGpuStatus.host_id == Host.id)
@@ -173,11 +181,17 @@ def run_collection(db: Session) -> list[str]:
                 )
                 upsert_snapshot(db, host, snapshot)
                 _evaluate_and_handle_user_alerts(db, host, snapshot, credentials)
+                db.commit()
                 messages.append(f'Collected {host.address}')
             except Exception as exc:  # noqa: BLE001
+                db.rollback()
                 messages.append(f'Failed {host.address}: {exc}')
-        cleanup_old_data(db)
-        db.commit()
+        try:
+            cleanup_old_data(db)
+            db.commit()
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            messages.append(f'Cleanup failed: {exc}')
         return messages
     finally:
         RUN_COLLECTION_LOCK.release()
