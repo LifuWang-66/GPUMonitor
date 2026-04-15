@@ -4,6 +4,7 @@ const statusSummary = document.getElementById('status-summary');
 const gpuHistoryGrid = document.getElementById('gpu-history-grid');
 const userTableWrapper = document.getElementById('user-table-wrapper');
 const storageWrapper = document.getElementById('storage-wrapper');
+const storageRefreshButton = document.getElementById('storage-refresh-button');
 const windowSelect = document.getElementById('window-select');
 const userWindowSelect = document.getElementById('user-window-select');
 const refreshButton = document.getElementById('refresh-button');
@@ -443,6 +444,24 @@ windowSelect?.addEventListener('change', () => {
 
 userWindowSelect?.addEventListener('change', () => {
   refreshUsers().catch(error => alert(`Failed to load user summary: ${error.message}`));
+});
+
+storageRefreshButton?.addEventListener('click', async () => {
+  storageRefreshButton.disabled = true;
+  const originalLabel = storageRefreshButton.textContent;
+  storageRefreshButton.textContent = 'Refreshing...';
+  try {
+    const response = await fetchJson('/api/storage/refresh', { method: 'POST' });
+    renderStorage(response.storage || []);
+    if (response.errors?.length) {
+      alert(`Storage refresh reported errors:\n${response.errors.join('\n')}`);
+    }
+  } catch (error) {
+    alert(`Storage refresh failed: ${error.message}`);
+  } finally {
+    storageRefreshButton.disabled = false;
+    storageRefreshButton.textContent = originalLabel;
+  }
 });
 
 logoutButton?.addEventListener('click', async () => {
