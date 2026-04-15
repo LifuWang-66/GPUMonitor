@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
@@ -15,7 +15,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import get_settings
 from app.db import Base, SessionLocal, engine, get_db
-from app.models import EmailOutbox, Host, UserProfile
+from app.models import EmailOutbox, Host, JobKillCandidate, UserProfile
 from app.schemas import (
     CredentialCheckRequest,
     EmailOutboxItem,
@@ -23,6 +23,9 @@ from app.schemas import (
     EmailOutboxMarkResponse,
     HostAccessResult,
     SessionResponse,
+    JobExtensionRequest,
+    JobKillCandidateItem,
+    JobKillResponse,
     TestEmailRequest,
     TestEmailResponse,
     TestPolicyEmailRequest,
@@ -31,7 +34,7 @@ from app.schemas import (
 from app.services.analytics import get_current_status, get_gpu_history, get_user_history, get_user_storage
 from app.services.collector import build_notification_email, ensure_hosts, get_collector_credentials, refresh_current_status_only, refresh_user_storage, run_collection
 from app.services.notifications import send_email
-from app.services.ssh_client import SshCredentials, close_collector_connections, fetch_home_users, validate_host_access
+from app.services.ssh_client import SshCredentials, close_collector_connections, fetch_home_users, kill_specific_gpu_processes, validate_host_access
 
 settings = get_settings()
 scheduler = BackgroundScheduler(timezone='UTC')
@@ -221,6 +224,103 @@ def api_refresh_storage(request: Request, allowed_hosts: list[str] = Depends(get
     viewer = request.session.get('username', '')
     storage = get_user_storage(db, allowed_hosts, viewer_username=viewer)
     return {'hosts_updated': hosts_updated, 'errors': errors, 'storage': storage}
+
+
+def _serialize_kill_candidate(row: JobKillCandidate, host: Host, now: datetime) -> JobKillCandidateItem:
+    end_at = row.killed_at or now
+    total_hours = max((end_at - row.first_seen_at).total_seconds() / 3600, 0)
+    return JobKillCandidateItem(
+        id=row.id,
+        host_name=host.name,
+        host_address=host.address,
+        pid=row.pid,
+        username=row.username,
+        gpu_index=row.gpu_index,
+        utilization_gpu=row.utilization_gpu,
+        memory_used_mb=row.memory_used_mb,
+        status=row.status,
+        kill_after=row.kill_after,
+        extended_until=row.extended_until,
+        extension_hours=row.extension_hours,
+        extension_reason=row.extension_reason,
+        first_seen_at=row.first_seen_at,
+        total_running_hours=round(total_hours, 2),
+    )
+
+
+@app.get('/api/jobs/to-be-killed', response_model=list[JobKillCandidateItem])
+def api_jobs_to_be_killed(request: Request, allowed_hosts: list[str] = Depends(get_allowed_hosts), db: Session = Depends(get_db)):
+    viewer = (request.session.get('username') or '').strip()
+    if not viewer or not allowed_hosts:
+        return []
+    stmt = (
+        select(JobKillCandidate, Host)
+        .join(Host, JobKillCandidate.host_id == Host.id)
+        .where(
+            Host.address.in_(allowed_hosts),
+            JobKillCandidate.status.in_(('pending', 'extended')),
+        )
+        .order_by(JobKillCandidate.kill_after)
+    )
+    if viewer not in ADMIN_USERNAMES:
+        stmt = stmt.where(JobKillCandidate.username == viewer)
+    rows = db.execute(stmt).all()
+    now = datetime.utcnow()
+    return [_serialize_kill_candidate(row, host, now) for row, host in rows]
+
+
+@app.post('/api/jobs/{job_id}/extension', response_model=JobKillResponse)
+def api_request_job_extension(job_id: int, payload: JobExtensionRequest, request: Request, db: Session = Depends(get_db)):
+    viewer = (request.session.get('username') or '').strip()
+    if not viewer:
+        raise HTTPException(status_code=401, detail='Please login first.')
+    if payload.hours not in {4, 8, 12, 24}:
+        raise HTTPException(status_code=400, detail='Extension must be one of 4, 8, 12, or 24 hours.')
+
+    row = db.get(JobKillCandidate, job_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail='Job not found.')
+    if row.username != viewer:
+        raise HTTPException(status_code=403, detail='You can only request extension for your own jobs.')
+    if row.status not in {'pending', 'extended'}:
+        raise HTTPException(status_code=400, detail='This job is not eligible for extension.')
+
+    now = datetime.utcnow()
+    row.status = 'extended'
+    row.extension_hours = payload.hours
+    row.extension_reason = payload.reason.strip()
+    row.extension_requested_at = now
+    row.extended_until = now + timedelta(hours=payload.hours)
+    db.commit()
+    return JobKillResponse(id=row.id, status=row.status, detail='Extension request recorded.')
+
+
+@app.post('/api/jobs/{job_id}/kill', response_model=JobKillResponse)
+def api_kill_job_now(job_id: int, request: Request, db: Session = Depends(get_db)):
+    viewer = (request.session.get('username') or '').strip()
+    if viewer not in ADMIN_USERNAMES:
+        raise HTTPException(status_code=403, detail='Only lifu and panzhou can kill jobs directly.')
+
+    row = db.get(JobKillCandidate, job_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail='Job not found.')
+    host = db.get(Host, row.host_id)
+    if host is None:
+        raise HTTPException(status_code=404, detail='Host not found.')
+
+    credentials = get_collector_credentials()
+    if credentials is None:
+        raise HTTPException(status_code=500, detail='Collector SSH credentials are not configured.')
+    kill_result = kill_specific_gpu_processes(host.address, credentials, [row.pid])
+    killed = {int(pid) for pid in kill_result.split(',') if pid.strip().isdigit()}
+    if row.pid not in killed:
+        raise HTTPException(status_code=500, detail='Failed to kill process (PID may have already exited).')
+
+    row.status = 'killed'
+    row.killed_at = datetime.utcnow()
+    row.killed_by = viewer
+    db.commit()
+    return JobKillResponse(id=row.id, status=row.status, detail='Job killed successfully.')
 
 
 @app.post('/api/collector/run')

@@ -258,6 +258,15 @@ button.secondary {
   min-height: 120px;
   align-items: center;
 }
+.extension-controls {
+  display: grid;
+  grid-template-columns: 110px 1fr auto;
+  gap: 8px;
+}
+button.danger {
+  background: linear-gradient(135deg, #fb7185 0%, #ef4444 100%);
+  color: #fff;
+}
 @media (max-width: 768px) {
   .page-header,
   .server-summary,
@@ -274,6 +283,9 @@ button.secondary {
   .gpu-card-index {
     min-width: 24px;
     padding-right: 6px;
+  }
+  .extension-controls {
+    grid-template-columns: 1fr;
   }
   .server-summary-list,
   .user-summary-list {
