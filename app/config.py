@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     smtp_use_tls: bool = True
     incident_form_url: str = 'https://docs.google.com/forms/d/1kAhrPkpn6kSLvp1n_d-UOCurd5c_X1IGXI-vqyIWBM8'
     excluded_usernames: str = 'dataset_model,lost+found,tempuser,smu'
+    low_util_exempt_usernames: str = ''
     allowed_history_windows: List[int] = Field(default_factory=lambda: [1, 3, 7, 14, 30])
 
     @field_validator(
@@ -63,6 +64,10 @@ class Settings(BaseSettings):
     @property
     def excluded_users(self) -> set[str]:
         return {username.strip() for username in self.excluded_usernames.split(',') if username.strip()}
+
+    @property
+    def low_util_exempt_users(self) -> set[str]:
+        return {username.strip() for username in self.low_util_exempt_usernames.split(',') if username.strip()}
 
 
 @lru_cache

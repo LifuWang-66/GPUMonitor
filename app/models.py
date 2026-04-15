@@ -134,3 +134,27 @@ class EmailOutbox(Base):
     error_message: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class JobKillCandidate(Base):
+    __tablename__ = 'job_kill_candidates'
+    __table_args__ = (UniqueConstraint('host_id', 'pid', name='uq_job_kill_host_pid'),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    host_id: Mapped[int] = mapped_column(ForeignKey('hosts.id'), nullable=False, index=True)
+    pid: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    username: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    gpu_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    machine: Mapped[str] = mapped_column(String(120), nullable=False)
+    utilization_gpu: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    memory_used_mb: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    kill_after: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default='pending', nullable=False, index=True)
+    extension_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    extension_reason: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    extension_requested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    extended_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    killed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    killed_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
