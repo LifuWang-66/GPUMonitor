@@ -34,7 +34,42 @@ PID_USER_QUERY = (
 )
 HOME_USERS_QUERY = 'ls /home'
 STORAGE_QUERY = "df -B1 /home | awk 'NR==2 {print $3}'"
-HOME_USER_USAGE_QUERY = "du -sb /home/* 2>/dev/null || true"
+
+
+def _build_home_user_usage_query(excluded_users: set[str], sudo_password: str) -> str:
+    excluded_list = sorted(excluded_users)
+    return (
+        "python3 - <<'PY'\n"
+        "import os\n"
+        "import subprocess\n"
+        "\n"
+        f"excluded = set({excluded_list!r})\n"
+        f"sudo_password = {sudo_password!r}\n"
+        "paths = []\n"
+        "for name in os.listdir('/home'):\n"
+        "    if name in excluded:\n"
+        "        continue\n"
+        "    paths.append(os.path.join('/home', name))\n"
+        "if not paths:\n"
+        "    raise SystemExit(0)\n"
+        "\n"
+        "proc = subprocess.run(\n"
+        "    ['sudo', '-S', 'du', '-sb', *paths],\n"
+        "    input=(sudo_password + '\\n').encode(),\n"
+        "    stdout=subprocess.PIPE,\n"
+        "    stderr=subprocess.DEVNULL,\n"
+        "    check=False,\n"
+        ")\n"
+        "if proc.returncode != 0:\n"
+        "    proc = subprocess.run(\n"
+        "        ['du', '-sb', *paths],\n"
+        "        stdout=subprocess.PIPE,\n"
+        "        stderr=subprocess.DEVNULL,\n"
+        "        check=False,\n"
+        "    )\n"
+        "print(proc.stdout.decode(), end='')\n"
+        "PY"
+    )
 
 
 @dataclass
@@ -241,7 +276,14 @@ def collect_host_snapshot(
         process_output = _execute_command_with_client(client, PROCESS_QUERY)
         pid_users_raw = _execute_command_with_client(client, PID_USER_QUERY)
         storage_used_raw = _execute_command_with_client(client, STORAGE_QUERY)
-        home_user_usage_raw = _execute_command_with_client(client, HOME_USER_USAGE_QUERY) if include_home_user_usage else ''
+        home_user_usage_raw = (
+            _execute_command_with_client(
+                client,
+                _build_home_user_usage_query(settings.excluded_users, credentials.password or ''),
+            )
+            if include_home_user_usage
+            else ''
+        )
     except Exception:  # noqa: BLE001
         with _COLLECTOR_CLIENTS_LOCK:
             stale = _COLLECTOR_CLIENTS.pop(host_address, None)
