@@ -253,6 +253,22 @@ def api_jobs_to_be_killed(request: Request, allowed_hosts: list[str] = Depends(g
     viewer = (request.session.get('username') or '').strip()
     if not viewer or not allowed_hosts:
         return []
+    exempt_users = settings.low_util_exempt_users
+    if exempt_users:
+        exempt_rows = db.scalars(
+            select(JobKillCandidate)
+            .join(Host, JobKillCandidate.host_id == Host.id)
+            .where(
+                Host.address.in_(allowed_hosts),
+                JobKillCandidate.status.in_(('pending', 'extended')),
+                JobKillCandidate.username.in_(tuple(exempt_users)),
+            )
+        ).all()
+        for row in exempt_rows:
+            row.status = 'resolved'
+        if exempt_rows:
+            db.commit()
+
     stmt = (
         select(JobKillCandidate, Host)
         .join(Host, JobKillCandidate.host_id == Host.id)
