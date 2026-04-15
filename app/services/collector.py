@@ -8,7 +8,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import CurrentGpuStatus, DailyGpuAggregate, DailyUserAggregate, Host, NotificationEvent, ProcessUtilizationSample, UserProfile, UserUtilizationSample
+from app.models import CurrentGpuStatus, DailyGpuAggregate, DailyUserAggregate, Host, NotificationEvent, ProcessUtilizationSample, UserProfile, UserStorageUsage, UserUtilizationSample
 from app.schemas import CurrentGpuResponse
 from app.services.analytics import snapshot_to_current_status
 from app.services.notifications import queue_email, send_email
@@ -206,6 +206,7 @@ def upsert_snapshot(db: Session, host: Host, snapshot: HostSnapshot) -> None:
                 gpu_samples=1,
                 non_idle_samples=1 if not is_idle else 0,
                 total_utilization=record.utilization_gpu,
+                total_memory_used_mb=record.memory_used_mb,
             )
             daily_user_upsert = daily_user_insert.on_conflict_do_update(
                 index_elements=['host_id', 'username', 'date'],
@@ -213,12 +214,14 @@ def upsert_snapshot(db: Session, host: Host, snapshot: HostSnapshot) -> None:
                     'gpu_samples': func.coalesce(DailyUserAggregate.gpu_samples, 0) + 1,
                     'non_idle_samples': func.coalesce(DailyUserAggregate.non_idle_samples, 0) + (1 if not is_idle else 0),
                     'total_utilization': func.coalesce(DailyUserAggregate.total_utilization, 0.0) + record.utilization_gpu,
+                    'total_memory_used_mb': func.coalesce(DailyUserAggregate.total_memory_used_mb, 0.0) + record.memory_used_mb,
                 },
             )
             db.execute(daily_user_upsert)
 
     _persist_user_utilization_samples(db, host, snapshot)
     _persist_process_utilization_samples(db, host, snapshot)
+    _persist_user_storage_usage(db, host, snapshot)
 
 
 def _upsert_current_status_snapshot(db: Session, host: Host, snapshot: HostSnapshot) -> None:
@@ -263,6 +266,26 @@ def _persist_user_utilization_samples(db: Session, host: Host, snapshot: HostSna
                 average_gpu_utilization=round(sum(utils) / max(len(utils), 1), 2),
             )
         )
+
+
+def _persist_user_storage_usage(db: Session, host: Host, snapshot: HostSnapshot) -> None:
+    if snapshot.home_user_used_bytes is None:
+        return
+    updated_at = snapshot.collected_at.replace(tzinfo=None)
+    for username, used_bytes in snapshot.home_user_used_bytes.items():
+        if username in settings.excluded_users:
+            continue
+        storage_insert = sqlite_insert(UserStorageUsage).values(
+            host_id=host.id,
+            username=username,
+            used_bytes=int(used_bytes),
+            updated_at=updated_at,
+        )
+        storage_upsert = storage_insert.on_conflict_do_update(
+            index_elements=['host_id', 'username'],
+            set_={'used_bytes': int(used_bytes), 'updated_at': updated_at},
+        )
+        db.execute(storage_upsert)
 
 
 def _persist_process_utilization_samples(db: Session, host: Host, snapshot: HostSnapshot) -> None:

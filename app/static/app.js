@@ -3,6 +3,7 @@ const currentGrid = document.getElementById('current-gpu-grid');
 const statusSummary = document.getElementById('status-summary');
 const gpuHistoryGrid = document.getElementById('gpu-history-grid');
 const userTableWrapper = document.getElementById('user-table-wrapper');
+const storageWrapper = document.getElementById('storage-wrapper');
 const windowSelect = document.getElementById('window-select');
 const userWindowSelect = document.getElementById('user-window-select');
 const refreshButton = document.getElementById('refresh-button');
@@ -275,6 +276,7 @@ function renderUsers(items) {
           <span class="server-summary-badge">Daily avg: ${item.daily_average_gpu_hours} h</span>
           <span class="server-summary-badge">Non-idle: ${item.non_idle_hours} h</span>
           <span class="server-summary-badge">Avg util: ${item.average_gpu_utilization}%</span>
+          <span class="server-summary-badge">Avg mem: ${mbToGb(item.average_memory_used_mb || 0)} GB</span>
         </div>
       </div>
       <details class="user-details">
@@ -287,6 +289,7 @@ function renderUsers(items) {
               <th>Daily avg hours</th>
               <th>Non-idle hours</th>
               <th>Avg util</th>
+              <th>Avg mem</th>
             </tr>
           </thead>
           <tbody>
@@ -299,6 +302,7 @@ function renderUsers(items) {
                     <td>${server.daily_average_gpu_hours} h</td>
                     <td>${server.non_idle_hours} h</td>
                     <td>${server.average_gpu_utilization}%</td>
+                    <td>${mbToGb(server.average_memory_used_mb || 0)} GB</td>
                   </tr>
                 `
               )
@@ -311,6 +315,75 @@ function renderUsers(items) {
   }
 
   userTableWrapper.appendChild(wrapper);
+}
+
+function bytesToHuman(bytes) {
+  const b = Number(bytes) || 0;
+  if (b >= 1024 ** 4) return `${(b / 1024 ** 4).toFixed(2)} TB`;
+  if (b >= 1024 ** 3) return `${(b / 1024 ** 3).toFixed(2)} GB`;
+  if (b >= 1024 ** 2) return `${(b / 1024 ** 2).toFixed(2)} MB`;
+  if (b >= 1024) return `${(b / 1024).toFixed(2)} KB`;
+  return `${b} B`;
+}
+
+function renderStorage(items) {
+  if (!storageWrapper) return;
+  storageWrapper.innerHTML = '';
+  if (!items.length) {
+    storageWrapper.textContent = 'No storage usage collected yet.';
+    storageWrapper.classList.add('empty-state');
+    return;
+  }
+  storageWrapper.classList.remove('empty-state');
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'user-list';
+
+  for (const item of items) {
+    const breakdown = (item.server_breakdown || []).slice().sort((a, b) => b.used_bytes - a.used_bytes);
+    const rows = breakdown
+      .map(
+        entry => `
+          <tr>
+            <td>${entry.host_name}</td>
+            <td>${entry.host_address}</td>
+            <td>${bytesToHuman(entry.used_bytes)}</td>
+            <td>${entry.updated_at ? new Date(entry.updated_at).toLocaleString() : '--'}</td>
+          </tr>
+        `
+      )
+      .join('');
+    const block = document.createElement('article');
+    block.className = 'user-card';
+    block.innerHTML = `
+      <div class="user-card-head">
+        <div>
+          <h3>${item.username}</h3>
+          <p class="muted">${breakdown.length} host${breakdown.length === 1 ? '' : 's'}</p>
+        </div>
+        <div class="user-summary-list">
+          <span class="server-summary-badge">Total: ${bytesToHuman(item.total_used_bytes)}</span>
+        </div>
+      </div>
+      <details class="user-details">
+        <summary>View per-host details</summary>
+        <table class="table compact-table">
+          <thead>
+            <tr>
+              <th>Host</th>
+              <th>Address</th>
+              <th>Used</th>
+              <th>Updated</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </details>
+    `;
+    wrapper.appendChild(block);
+  }
+
+  storageWrapper.appendChild(wrapper);
 }
 
 async function fetchJson(url, options = {}) {
@@ -328,14 +401,16 @@ async function refreshAll() {
   }
   const windowDays = Number(windowSelect.value);
   const userWindowDays = Number(userWindowSelect?.value || windowSelect.value);
-  const [current, gpuHistory, users] = await Promise.all([
+  const [current, gpuHistory, users, storage] = await Promise.all([
     fetchJson('/api/status/current'),
     fetchJson(`/api/history/gpus?days=${windowDays}`),
     fetchJson(`/api/history/users?days=${userWindowDays}`),
+    fetchJson('/api/storage/users'),
   ]);
   renderCurrent(current);
   renderGpuHistory(gpuHistory);
   renderUsers(users);
+  renderStorage(storage);
 }
 
 async function refreshUsers() {
