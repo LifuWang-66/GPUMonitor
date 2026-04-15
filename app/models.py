@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -74,6 +74,18 @@ class DailyUserAggregate(Base):
     gpu_samples: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     non_idle_samples: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     total_utilization: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    total_memory_used_mb: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+
+
+class UserStorageUsage(Base):
+    __tablename__ = 'user_storage_usage'
+    __table_args__ = (UniqueConstraint('host_id', 'username', name='uq_user_storage_host_user'),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    host_id: Mapped[int] = mapped_column(ForeignKey('hosts.id'), nullable=False, index=True)
+    username: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    used_bytes: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 
 class UserUtilizationSample(Base):

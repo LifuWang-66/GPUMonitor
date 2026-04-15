@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
+from sqlalchemy import inspect, select, text
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -28,7 +28,7 @@ from app.schemas import (
     TestPolicyEmailRequest,
     TestPolicyEmailResponse,
 )
-from app.services.analytics import get_current_status, get_gpu_history, get_user_history
+from app.services.analytics import get_current_status, get_gpu_history, get_user_history, get_user_storage
 from app.services.collector import build_notification_email, ensure_hosts, get_collector_credentials, refresh_current_status_only, run_collection
 from app.services.notifications import send_email
 from app.services.ssh_client import SshCredentials, close_collector_connections, fetch_home_users, validate_host_access
@@ -46,9 +46,20 @@ def _scheduled_collection() -> None:
         db.close()
 
 
+def _apply_lightweight_migrations() -> None:
+    """Add columns introduced in newer versions without an Alembic pipeline."""
+    insp = inspect(engine)
+    if insp.has_table('daily_user_aggregates'):
+        cols = {c['name'] for c in insp.get_columns('daily_user_aggregates')}
+        if 'total_memory_used_mb' not in cols:
+            with engine.begin() as conn:
+                conn.execute(text('ALTER TABLE daily_user_aggregates ADD COLUMN total_memory_used_mb FLOAT NOT NULL DEFAULT 0'))
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
+    _apply_lightweight_migrations()
     db = SessionLocal()
     try:
         ensure_hosts(db)
@@ -197,6 +208,11 @@ def api_user_history(request: Request, days: int = 30, allowed_hosts: list[str] 
     if days not in settings.allowed_history_windows:
         raise HTTPException(status_code=400, detail='不支持的时间窗口。')
     return get_user_history(db, allowed_hosts, days, viewer_username=request.session.get('username', ''))
+
+
+@app.get('/api/storage/users')
+def api_user_storage(request: Request, allowed_hosts: list[str] = Depends(get_allowed_hosts), db: Session = Depends(get_db)):
+    return get_user_storage(db, allowed_hosts, viewer_username=request.session.get('username', ''))
 
 
 @app.post('/api/collector/run')
