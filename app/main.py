@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
@@ -8,15 +9,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
+from sqlalchemy import inspect, select, text
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import get_settings
 from app.db import Base, SessionLocal, engine, get_db
-from app.models import Host, UserProfile
+from app.models import EmailOutbox, Host, UserProfile
 from app.schemas import (
     CredentialCheckRequest,
+    EmailOutboxItem,
+    EmailOutboxMarkRequest,
+    EmailOutboxMarkResponse,
     HostAccessResult,
     SessionResponse,
     TestEmailRequest,
@@ -24,8 +28,8 @@ from app.schemas import (
     TestPolicyEmailRequest,
     TestPolicyEmailResponse,
 )
-from app.services.analytics import get_current_status, get_gpu_history, get_user_history
-from app.services.collector import build_notification_email, ensure_hosts, get_collector_credentials, refresh_current_status_only, run_collection
+from app.services.analytics import get_current_status, get_gpu_history, get_user_history, get_user_storage
+from app.services.collector import build_notification_email, ensure_hosts, get_collector_credentials, refresh_current_status_only, refresh_user_storage, run_collection
 from app.services.notifications import send_email
 from app.services.ssh_client import SshCredentials, close_collector_connections, fetch_home_users, validate_host_access
 
@@ -42,9 +46,20 @@ def _scheduled_collection() -> None:
         db.close()
 
 
+def _apply_lightweight_migrations() -> None:
+    """Add columns introduced in newer versions without an Alembic pipeline."""
+    insp = inspect(engine)
+    if insp.has_table('daily_user_aggregates'):
+        cols = {c['name'] for c in insp.get_columns('daily_user_aggregates')}
+        if 'total_memory_used_mb' not in cols:
+            with engine.begin() as conn:
+                conn.execute(text('ALTER TABLE daily_user_aggregates ADD COLUMN total_memory_used_mb FLOAT NOT NULL DEFAULT 0'))
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
+    _apply_lightweight_migrations()
     db = SessionLocal()
     try:
         ensure_hosts(db)
@@ -195,6 +210,19 @@ def api_user_history(request: Request, days: int = 30, allowed_hosts: list[str] 
     return get_user_history(db, allowed_hosts, days, viewer_username=request.session.get('username', ''))
 
 
+@app.get('/api/storage/users')
+def api_user_storage(request: Request, allowed_hosts: list[str] = Depends(get_allowed_hosts), db: Session = Depends(get_db)):
+    return get_user_storage(db, allowed_hosts, viewer_username=request.session.get('username', ''))
+
+
+@app.post('/api/storage/refresh')
+def api_refresh_storage(request: Request, allowed_hosts: list[str] = Depends(get_allowed_hosts), db: Session = Depends(get_db)):
+    hosts_updated, errors = refresh_user_storage(db, allowed_hosts)
+    viewer = request.session.get('username', '')
+    storage = get_user_storage(db, allowed_hosts, viewer_username=viewer)
+    return {'hosts_updated': hosts_updated, 'errors': errors, 'storage': storage}
+
+
 @app.post('/api/collector/run')
 def api_run_collector(db: Session = Depends(get_db)):
     return {'messages': run_collection(db)}
@@ -252,7 +280,7 @@ def api_test_policy_email(payload: TestPolicyEmailRequest, request: Request, db:
             cc_email = lifu_profile.email.strip()
 
     reason = (
-        f'Your 4-hour max GPU utilization is {payload.simulated_max_utilization:.2f}% '
+        f'Your 8-hour max GPU utilization is {payload.simulated_max_utilization:.2f}% '
         '(between 40% and 70%).'
     )
     subject, body = build_notification_email(host.name, host.address, username, 'avg_util_8h_40_70', reason)
@@ -269,3 +297,47 @@ def api_test_policy_email(payload: TestPolicyEmailRequest, request: Request, db:
         simulated_max_utilization=payload.simulated_max_utilization,
         detail='Policy-style test email sent.',
     )
+
+
+@app.get('/api/email-outbox/pending', response_model=list[EmailOutboxItem])
+def api_get_pending_emails(limit: int = 50, db: Session = Depends(get_db)):
+    rows = db.scalars(
+        select(EmailOutbox)
+        .where(EmailOutbox.status == 'pending')
+        .order_by(EmailOutbox.created_at)
+        .limit(limit)
+    ).all()
+    return [
+        EmailOutboxItem(
+            id=row.id,
+            to_email=row.to_email,
+            cc_email=row.cc_email,
+            subject=row.subject,
+            body=row.body,
+            status=row.status,
+            created_at=row.created_at,
+        )
+        for row in rows
+    ]
+
+
+@app.post('/api/email-outbox/{email_id}/mark-sent', response_model=EmailOutboxMarkResponse)
+def api_mark_email_sent(email_id: int, db: Session = Depends(get_db)):
+    row = db.get(EmailOutbox, email_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f'Email {email_id} not found.')
+    row.status = 'sent'
+    row.sent_at = datetime.utcnow()
+    db.commit()
+    return EmailOutboxMarkResponse(id=email_id, status='sent', detail='Marked as sent.')
+
+
+@app.post('/api/email-outbox/{email_id}/mark-failed', response_model=EmailOutboxMarkResponse)
+def api_mark_email_failed(email_id: int, payload: EmailOutboxMarkRequest, db: Session = Depends(get_db)):
+    row = db.get(EmailOutbox, email_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f'Email {email_id} not found.')
+    row.status = 'failed'
+    row.error_message = payload.error_message
+    db.commit()
+    return EmailOutboxMarkResponse(id=email_id, status='failed', detail='Marked as failed.')

@@ -30,15 +30,15 @@
         <form id="access-form" method="post" action="/session/access" autocomplete="on">
           <label>
             Username
-            <input name="username" required autocomplete="username" placeholder="e.g. jinyang" value="{{ session_username or '' }}" />
+            <input name="username" required placeholder="e.g. jinyang" value="{{ session_username or '' }}" autocomplete="username" />
           </label>
           <label>
             Email
-            <input name="email" type="email" autocomplete="email" placeholder="Required on first login; optional later to keep current email" value="{{ session_email or '' }}" />
+            <input name="email" type="email" placeholder="Required on first login; optional later to keep current email" value="{{ session_email or '' }}" autocomplete="email" />
           </label>
           <label>
             Password
-            <input name="password" type="password" autocomplete="current-password" placeholder="Leave empty if SSH key is already configured" />
+            <input name="password" type="password" placeholder="Leave empty if SSH key is already configured" autocomplete="current-password" />
           </label>
           <button type="submit">Validate and enter dashboard</button>
         </form>
@@ -72,7 +72,7 @@
               Time range
               <select id="window-select">
                 {% for window in history_windows %}
-                <option value="{{ window }}" {% if window == 30 %}selected{% endif %}>{{ window }} days</option>
+                <option value="{{ window }}" {% if window == 30 %}selected{% endif %}>{{ window }} day{% if window != 1 %}s{% endif %}</option>
                 {% endfor %}
               </select>
             </label>
@@ -87,8 +87,29 @@
             <h2>User GPU Usage</h2>
             <p class="muted section-note">By default, only the current user is shown. lifu and panzhou can view all users. Expand to see per-host details.</p>
           </div>
+          <div>
+            <label>
+              Time range
+              <select id="user-window-select">
+                {% for window in history_windows %}
+                <option value="{{ window }}" {% if window == 30 %}selected{% endif %}>{{ window }} day{% if window != 1 %}s{% endif %}</option>
+                {% endfor %}
+              </select>
+            </label>
+          </div>
         </div>
         <div id="user-table-wrapper" class="empty-state">User aggregates you are allowed to view will appear after login.</div>
+      </section>
+
+      <section class="panel storage-panel">
+        <div class="section-title-row">
+          <div>
+            <h2>User Storage Usage</h2>
+            <p class="muted section-note">Total /home usage per user across hosts. lifu and panzhou see all users; everyone else sees only their own.</p>
+          </div>
+          <button id="storage-refresh-button" class="secondary">Refresh storage</button>
+        </div>
+        <div id="storage-wrapper" class="empty-state">Storage usage will appear after login.</div>
       </section>
     </main>
 

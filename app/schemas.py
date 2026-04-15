@@ -93,6 +93,7 @@ class UserServerBreakdown(BaseModel):
     gpu_hours: float
     non_idle_hours: float
     average_gpu_utilization: float
+    average_memory_used_mb: float
     daily_average_gpu_hours: float
 
 
@@ -103,5 +104,39 @@ class UserSummaryResponse(BaseModel):
     gpu_hours: float
     non_idle_hours: float
     average_gpu_utilization: float
+    average_memory_used_mb: float
     daily_average_gpu_hours: float
     server_breakdown: list[UserServerBreakdown]
+
+
+class UserStorageHostItem(BaseModel):
+    host_name: str
+    host_address: str
+    used_bytes: int
+    updated_at: datetime | None = None
+
+
+class UserStorageSummary(BaseModel):
+    username: str
+    total_used_bytes: int
+    server_breakdown: list[UserStorageHostItem]
+
+
+class EmailOutboxItem(BaseModel):
+    id: int
+    to_email: str
+    cc_email: str | None = None
+    subject: str
+    body: str
+    status: str
+    created_at: datetime
+
+
+class EmailOutboxMarkRequest(BaseModel):
+    error_message: str | None = None
+
+
+class EmailOutboxMarkResponse(BaseModel):
+    id: int
+    status: str
+    detail: str

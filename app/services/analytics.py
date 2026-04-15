@@ -7,8 +7,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import CurrentGpuStatus, DailyGpuAggregate, DailyUserAggregate, Host
-from app.schemas import CurrentGpuResponse, GpuSummaryResponse, TrendPoint, UserServerBreakdown, UserSummaryResponse
+from app.models import CurrentGpuStatus, DailyGpuAggregate, DailyUserAggregate, Host, UserStorageUsage
+from app.schemas import CurrentGpuResponse, GpuSummaryResponse, TrendPoint, UserServerBreakdown, UserStorageHostItem, UserStorageSummary, UserSummaryResponse
 from app.services.ssh_client import HostSnapshot
 
 settings = get_settings()
@@ -139,6 +139,7 @@ def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_us
             'gpu_samples': 0,
             'non_idle_samples': 0,
             'total_utilization': 0.0,
+            'total_memory_used_mb': 0.0,
             'server_breakdown': defaultdict(
                 lambda: {
                     'gpu_type': 'Unknown model',
@@ -146,6 +147,7 @@ def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_us
                     'gpu_samples': 0,
                     'non_idle_samples': 0,
                     'total_utilization': 0.0,
+                    'total_memory_used_mb': 0.0,
                 }
             ),
         }
@@ -169,10 +171,12 @@ def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_us
         gpu_samples = daily.gpu_samples or 0
         non_idle_samples = daily.non_idle_samples or 0
         total_utilization = daily.total_utilization or 0.0
+        total_memory = daily.total_memory_used_mb or 0.0
 
         bucket['gpu_samples'] += gpu_samples
         bucket['non_idle_samples'] += non_idle_samples
         bucket['total_utilization'] += total_utilization
+        bucket['total_memory_used_mb'] += total_memory
         bucket['active_days'].add(daily.date)
 
         server_item = bucket['server_breakdown'][gpu_type]
@@ -180,6 +184,7 @@ def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_us
         server_item['gpu_samples'] += gpu_samples
         server_item['non_idle_samples'] += non_idle_samples
         server_item['total_utilization'] += total_utilization
+        server_item['total_memory_used_mb'] += total_memory
         server_item['active_days'].add(daily.date)
 
     results: list[UserSummaryResponse] = []
@@ -190,6 +195,7 @@ def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_us
                 gpu_hours=round(server['gpu_samples'] * sample_hours, 2),
                 non_idle_hours=round(server['non_idle_samples'] * sample_hours, 2),
                 average_gpu_utilization=round(server['total_utilization'] / (server['gpu_samples'] or 1), 2),
+                average_memory_used_mb=round(server['total_memory_used_mb'] / (server['gpu_samples'] or 1), 2),
                 daily_average_gpu_hours=round((server['gpu_samples'] * sample_hours) / max(len(server['active_days']), 1), 2),
             )
             for _, server in sorted(item['server_breakdown'].items())
@@ -204,11 +210,51 @@ def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_us
                 gpu_hours=total_gpu_hours,
                 non_idle_hours=round(item['non_idle_samples'] * sample_hours, 2),
                 average_gpu_utilization=round(item['total_utilization'] / (item['gpu_samples'] or 1), 2),
+                average_memory_used_mb=round(item['total_memory_used_mb'] / (item['gpu_samples'] or 1), 2),
                 daily_average_gpu_hours=round(total_gpu_hours / active_day_count, 2),
                 server_breakdown=server_breakdown,
             )
         )
     return results
+
+
+def get_user_storage(db: Session, allowed_hosts: list[str], viewer_username: str) -> list[UserStorageSummary]:
+    if not allowed_hosts or not viewer_username:
+        return []
+
+    is_admin = viewer_username in ADMIN_USERNAMES
+    stmt = (
+        select(UserStorageUsage, Host)
+        .join(Host, UserStorageUsage.host_id == Host.id)
+        .where(Host.address.in_(allowed_hosts))
+        .order_by(UserStorageUsage.username, Host.address)
+    )
+    if not is_admin:
+        stmt = stmt.where(UserStorageUsage.username == viewer_username)
+
+    rows = db.execute(stmt).all()
+
+    grouped: dict[str, dict] = defaultdict(lambda: {'total': 0, 'breakdown': []})
+    for usage, host in rows:
+        bucket = grouped[usage.username]
+        bucket['total'] += int(usage.used_bytes or 0)
+        bucket['breakdown'].append(
+            UserStorageHostItem(
+                host_name=host.name,
+                host_address=host.address,
+                used_bytes=int(usage.used_bytes or 0),
+                updated_at=usage.updated_at,
+            )
+        )
+
+    return [
+        UserStorageSummary(
+            username=username,
+            total_used_bytes=item['total'],
+            server_breakdown=item['breakdown'],
+        )
+        for username, item in sorted(grouped.items(), key=lambda entry: (-entry[1]['total'], entry[0]))
+    ]
 
 
 def _get_host_gpu_type_map(db: Session, allowed_hosts: list[str]) -> dict[str, str]:

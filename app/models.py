@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -74,6 +74,18 @@ class DailyUserAggregate(Base):
     gpu_samples: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     non_idle_samples: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     total_utilization: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    total_memory_used_mb: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+
+
+class UserStorageUsage(Base):
+    __tablename__ = 'user_storage_usage'
+    __table_args__ = (UniqueConstraint('host_id', 'username', name='uq_user_storage_host_user'),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    host_id: Mapped[int] = mapped_column(ForeignKey('hosts.id'), nullable=False, index=True)
+    username: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    used_bytes: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 
 class UserUtilizationSample(Base):
@@ -86,6 +98,18 @@ class UserUtilizationSample(Base):
     average_gpu_utilization: Mapped[float] = mapped_column(Float, default=0, nullable=False)
 
 
+class ProcessUtilizationSample(Base):
+    __tablename__ = 'process_utilization_samples'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    host_id: Mapped[int] = mapped_column(ForeignKey('hosts.id'), nullable=False, index=True)
+    pid: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    username: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    gpu_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    sampled_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    gpu_utilization: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+
+
 class NotificationEvent(Base):
     __tablename__ = 'notification_events'
     __table_args__ = (UniqueConstraint('host_id', 'username', 'event_type', 'event_key', name='uq_notification_dedupe'),)
@@ -96,3 +120,17 @@ class NotificationEvent(Base):
     event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     event_key: Mapped[str] = mapped_column(String(128), nullable=False)
     sent_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class EmailOutbox(Base):
+    __tablename__ = 'email_outbox'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    to_email: Mapped[str] = mapped_column(String(320), nullable=False)
+    cc_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    subject: Mapped[str] = mapped_column(String(500), nullable=False)
+    body: Mapped[str] = mapped_column(String(5000), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default='pending', nullable=False, index=True)
+    error_message: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
