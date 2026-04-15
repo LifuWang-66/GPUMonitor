@@ -365,12 +365,15 @@ def _get_eight_hour_max_util_by_pid(db: Session, host_id: int, pid: int, usernam
 
 def _refresh_kill_candidates_and_enforce(db: Session, host: Host, snapshot: HostSnapshot, credentials: SshCredentials) -> None:
     now_naive = snapshot.collected_at.replace(tzinfo=None)
+    exempt_users = settings.low_util_exempt_users
     active_pid_details: dict[int, tuple[str, int, float, float]] = {}
     for record in snapshot.gpu_records:
         if record.utilization_gpu >= LOW_UTIL_THRESHOLD:
             continue
         for pid, username in record.active_pids.items():
             if username in settings.excluded_users:
+                continue
+            if username in exempt_users:
                 continue
             pid_memory = record.active_pid_memory_mb.get(pid, record.memory_used_mb)
             active_pid_details[pid] = (username, record.gpu_index, record.utilization_gpu, pid_memory)
@@ -434,6 +437,7 @@ def _refresh_kill_candidates_and_enforce(db: Session, host: Host, snapshot: Host
 def _evaluate_and_handle_user_alerts(db: Session, host: Host, snapshot: HostSnapshot, credentials: SshCredentials) -> None:
     lifu_profile = db.scalar(select(UserProfile).where(UserProfile.username == 'lifu'))
     cc_email = lifu_profile.email if lifu_profile and lifu_profile.email else None
+    exempt_users = settings.low_util_exempt_users
     active_issues: set[tuple[str, str]] = set()
 
     if snapshot.home_user_used_bytes is not None:
@@ -510,6 +514,8 @@ def _evaluate_and_handle_user_alerts(db: Session, host: Host, snapshot: HostSnap
             )
             active_issues.add((username, 'avg_util_8h_40_70'))
         elif eight_hour_max < LOW_UTIL_THRESHOLD and eight_hour_max >= 0:
+            if username in exempt_users:
+                continue
             user_pids = per_user_pids.get(username, set())
             if user_pids:
                 _notify_issue_with_escalation(
