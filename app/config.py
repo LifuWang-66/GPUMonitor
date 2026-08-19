@@ -5,12 +5,7 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-WINDOW_LABEL_OVERRIDES = {90: '3 months', 180: '6 months', 365: '12 months'}
-
-
 def format_window_label(days: int) -> str:
-    if days in WINDOW_LABEL_OVERRIDES:
-        return WINDOW_LABEL_OVERRIDES[days]
     return f'{days} day' if days == 1 else f'{days} days'
 
 

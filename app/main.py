@@ -216,7 +216,7 @@ def api_user_history(
     allowed_hosts: list[str] = Depends(get_allowed_hosts),
     db: Session = Depends(get_db),
 ):
-    """Preset windows (including 90/180/365 days) via `days`, or a custom span via `start_date`/`end_date`."""
+    """Preset windows via `days`, or a custom span via `start_date`/`end_date`."""
     try:
         period_start, period_end = resolve_history_range(
             days=days,

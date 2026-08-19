@@ -300,7 +300,8 @@ function renderUserRangeNote(items) {
     return;
   }
   userRangeNote.hidden = false;
-  userRangeNote.textContent = `Range: ${first.period_start} → ${first.period_end} (${first.period_days} days)`;
+  const dayLabel = first.period_days === 1 ? 'day' : 'days';
+  userRangeNote.textContent = `Range: ${first.period_start} → ${first.period_end} (${first.period_days} ${dayLabel})`;
 }
 
 function renderUsers(items) {
