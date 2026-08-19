@@ -113,7 +113,7 @@ def home(request: Request):
             'app_name': settings.app_name,
             'host_aliases': settings.hosts,
             'history_windows': settings.allowed_history_windows,
-            'user_history_windows': settings.user_history_window_options,
+            'user_history_windows': settings.allowed_user_history_windows,
             'session_username': request.session.get('username'),
             'session_email': request.session.get('email'),
             'accessible_hosts': request.session.get('accessible_hosts', []),

@@ -5,10 +5,6 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-def format_window_label(days: int) -> str:
-    return f'{days} day' if days == 1 else f'{days} days'
-
-
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', extra='ignore')
 
@@ -67,10 +63,6 @@ class Settings(BaseSettings):
             alias = aliases[index] if index < len(aliases) else address
             results.append({'name': alias, 'address': address})
         return results
-
-    @property
-    def user_history_window_options(self) -> list[dict[str, object]]:
-        return [{'days': days, 'label': format_window_label(days)} for days in self.allowed_user_history_windows]
 
     @property
     def user_aggregate_retention(self) -> int:
