@@ -666,9 +666,12 @@ def build_notification_email(
 
 
 def cleanup_old_data(db: Session) -> None:
-    cutoff = datetime.now(timezone.utc).date() - timedelta(days=settings.retention_days)
+    today = datetime.now(timezone.utc).date()
+    cutoff = today - timedelta(days=settings.retention_days)
     db.execute(delete(DailyGpuAggregate).where(DailyGpuAggregate.date < cutoff))
-    db.execute(delete(DailyUserAggregate).where(DailyUserAggregate.date < cutoff))
+    # User aggregates back the 3/6/12-month and custom windows, so they are kept longer.
+    user_cutoff = today - timedelta(days=settings.user_aggregate_retention)
+    db.execute(delete(DailyUserAggregate).where(DailyUserAggregate.date < user_cutoff))
     sample_cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=7)
     db.execute(delete(UserUtilizationSample).where(UserUtilizationSample.sampled_at < sample_cutoff))
     db.execute(delete(ProcessUtilizationSample).where(ProcessUtilizationSample.sampled_at < sample_cutoff))

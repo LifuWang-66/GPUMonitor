@@ -114,22 +114,65 @@ def get_gpu_history(db: Session, allowed_hosts: list[str], days: int) -> list[Gp
     return results
 
 
-def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_username: str) -> list[UserSummaryResponse]:
+def resolve_history_range(
+    *,
+    days: int | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    allowed_windows: list[int] | None = None,
+    default_days: int = 30,
+) -> tuple[date, date]:
+    """Turn either a preset window or an explicit start/end pair into an inclusive date range."""
+    today = datetime.now(timezone.utc).date()
+    if start_date is not None or end_date is not None:
+        if start_date is None or end_date is None:
+            raise ValueError('A custom range needs both start_date and end_date.')
+        if start_date > end_date:
+            raise ValueError('start_date must not be later than end_date.')
+        if start_date > today:
+            raise ValueError('start_date must not be in the future.')
+        capped_end = min(end_date, today)
+        span = (capped_end - start_date).days + 1
+        if span > settings.max_custom_history_days:
+            raise ValueError(f'A custom range must not exceed {settings.max_custom_history_days} days.')
+        return start_date, capped_end
+
+    window = default_days if days is None else days
+    if allowed_windows is not None and window not in allowed_windows:
+        raise ValueError('Unsupported time window.')
+    if window < 1:
+        raise ValueError('The time window must cover at least one day.')
+    return today - timedelta(days=window - 1), today
+
+
+def get_user_history(
+    db: Session,
+    allowed_hosts: list[str],
+    viewer_username: str,
+    start_date: date,
+    end_date: date,
+) -> list[UserSummaryResponse]:
     if not allowed_hosts or not viewer_username:
         return []
 
-    since = datetime.now(timezone.utc).date() - timedelta(days=days - 1)
     rows = db.execute(
         select(DailyUserAggregate, Host)
         .join(Host, DailyUserAggregate.host_id == Host.id)
-        .where(Host.address.in_(allowed_hosts), DailyUserAggregate.date >= since)
+        .where(
+            Host.address.in_(allowed_hosts),
+            DailyUserAggregate.date >= start_date,
+            DailyUserAggregate.date <= end_date,
+        )
         .order_by(DailyUserAggregate.username, Host.address)
     ).all()
 
     sample_hours = settings.collector_interval_minutes / 60
     is_admin = viewer_username in ADMIN_USERNAMES
+    period_days = (end_date - start_date).days + 1
     host_gpu_type_map = _get_host_gpu_type_map(db, allowed_hosts)
-    gpu_type_by_host_day, latest_gpu_type_by_host = _get_gpu_type_from_daily_aggregates(db, allowed_hosts, since)
+    gpu_type_by_host_day, latest_gpu_type_by_host = _get_gpu_type_from_daily_aggregates(
+        db, allowed_hosts, start_date, end_date
+    )
 
     grouped: dict[str, dict] = defaultdict(
         lambda: {
@@ -212,6 +255,10 @@ def get_user_history(db: Session, allowed_hosts: list[str], days: int, viewer_us
                 average_gpu_utilization=round(item['total_utilization'] / (item['gpu_samples'] or 1), 2),
                 average_memory_used_mb=round(item['total_memory_used_mb'] / (item['gpu_samples'] or 1), 2),
                 daily_average_gpu_hours=round(total_gpu_hours / active_day_count, 2),
+                active_days=len(item['active_days']),
+                period_start=start_date,
+                period_end=end_date,
+                period_days=period_days,
                 server_breakdown=server_breakdown,
             )
         )
@@ -299,11 +346,16 @@ def _get_gpu_type_from_daily_aggregates(
     db: Session,
     allowed_hosts: list[str],
     since_date: date,
+    until_date: date,
 ) -> tuple[dict[tuple[int, date], str], dict[int, str]]:
     rows = db.execute(
         select(DailyGpuAggregate.host_id, DailyGpuAggregate.date, DailyGpuAggregate.gpu_name)
         .join(Host, DailyGpuAggregate.host_id == Host.id)
-        .where(Host.address.in_(allowed_hosts), DailyGpuAggregate.date >= since_date)
+        .where(
+            Host.address.in_(allowed_hosts),
+            DailyGpuAggregate.date >= since_date,
+            DailyGpuAggregate.date <= until_date,
+        )
         .order_by(DailyGpuAggregate.date.desc(), DailyGpuAggregate.host_id, DailyGpuAggregate.gpu_index)
     ).all()
     by_host_day: dict[tuple[int, date], str] = {}

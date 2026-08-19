@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from pydantic import BaseModel, Field
 
 
@@ -106,6 +106,10 @@ class UserSummaryResponse(BaseModel):
     average_gpu_utilization: float
     average_memory_used_mb: float
     daily_average_gpu_hours: float
+    active_days: int
+    period_start: date
+    period_end: date
+    period_days: int
     server_breakdown: list[UserServerBreakdown]
 
 

@@ -267,6 +267,22 @@ button.danger {
   background: linear-gradient(135deg, #fb7185 0%, #ef4444 100%);
   color: #fff;
 }
+.range-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.custom-range {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.custom-range[hidden] { display: none; }
+.custom-range input { min-width: 150px; }
+#user-range-note { margin: 0 0 12px; }
+#user-range-note[hidden] { display: none; }
 @media (max-width: 768px) {
   .page-header,
   .server-summary,
@@ -286,6 +302,12 @@ button.danger {
   }
   .extension-controls {
     grid-template-columns: 1fr;
+  }
+  .range-controls,
+  .custom-range {
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
   }
   .server-summary-list,
   .user-summary-list {
