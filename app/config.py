@@ -5,6 +5,15 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+WINDOW_LABEL_OVERRIDES = {90: '3 months', 180: '6 months', 365: '12 months'}
+
+
+def format_window_label(days: int) -> str:
+    if days in WINDOW_LABEL_OVERRIDES:
+        return WINDOW_LABEL_OVERRIDES[days]
+    return f'{days} day' if days == 1 else f'{days} days'
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', extra='ignore')
 
@@ -31,6 +40,9 @@ class Settings(BaseSettings):
     excluded_usernames: str = 'dataset_model,lost+found,tempuser,smu'
     low_util_exempt_usernames: str = ''
     allowed_history_windows: List[int] = Field(default_factory=lambda: [1, 3, 7, 14, 30])
+    allowed_user_history_windows: List[int] = Field(default_factory=lambda: [1, 3, 7, 14, 30, 90, 180, 365])
+    max_custom_history_days: int = 1096
+    user_aggregate_retention_days: int = 400
 
     @field_validator(
         'collector_ssh_username',
@@ -60,6 +72,15 @@ class Settings(BaseSettings):
             alias = aliases[index] if index < len(aliases) else address
             results.append({'name': alias, 'address': address})
         return results
+
+    @property
+    def user_history_window_options(self) -> list[dict[str, object]]:
+        return [{'days': days, 'label': format_window_label(days)} for days in self.allowed_user_history_windows]
+
+    @property
+    def user_aggregate_retention(self) -> int:
+        """Daily user aggregates are kept longer so multi-month windows have data."""
+        return max(self.retention_days, self.user_aggregate_retention_days)
 
     @property
     def excluded_users(self) -> set[str]:

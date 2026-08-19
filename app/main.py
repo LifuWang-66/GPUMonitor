@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
@@ -31,7 +31,7 @@ from app.schemas import (
     TestPolicyEmailRequest,
     TestPolicyEmailResponse,
 )
-from app.services.analytics import get_current_status, get_gpu_history, get_user_history, get_user_storage
+from app.services.analytics import get_current_status, get_gpu_history, get_user_history, get_user_storage, resolve_history_range
 from app.services.collector import build_notification_email, ensure_hosts, get_collector_credentials, refresh_current_status_only, refresh_user_storage, run_collection
 from app.services.notifications import send_email
 from app.services.ssh_client import SshCredentials, close_collector_connections, fetch_home_users, kill_specific_gpu_processes, validate_host_access
@@ -113,6 +113,7 @@ def home(request: Request):
             'app_name': settings.app_name,
             'host_aliases': settings.hosts,
             'history_windows': settings.allowed_history_windows,
+            'user_history_windows': settings.user_history_window_options,
             'session_username': request.session.get('username'),
             'session_email': request.session.get('email'),
             'accessible_hosts': request.session.get('accessible_hosts', []),
@@ -207,10 +208,31 @@ def api_gpu_history(days: int = 30, allowed_hosts: list[str] = Depends(get_allow
 
 
 @app.get('/api/history/users')
-def api_user_history(request: Request, days: int = 30, allowed_hosts: list[str] = Depends(get_allowed_hosts), db: Session = Depends(get_db)):
-    if days not in settings.allowed_history_windows:
-        raise HTTPException(status_code=400, detail='不支持的时间窗口。')
-    return get_user_history(db, allowed_hosts, days, viewer_username=request.session.get('username', ''))
+def api_user_history(
+    request: Request,
+    days: int | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    allowed_hosts: list[str] = Depends(get_allowed_hosts),
+    db: Session = Depends(get_db),
+):
+    """Preset windows (including 90/180/365 days) via `days`, or a custom span via `start_date`/`end_date`."""
+    try:
+        period_start, period_end = resolve_history_range(
+            days=days,
+            start_date=start_date,
+            end_date=end_date,
+            allowed_windows=settings.allowed_user_history_windows,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return get_user_history(
+        db,
+        allowed_hosts,
+        viewer_username=request.session.get('username', ''),
+        start_date=period_start,
+        end_date=period_end,
+    )
 
 
 @app.get('/api/storage/users')

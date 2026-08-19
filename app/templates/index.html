@@ -87,17 +87,30 @@
             <h2>User GPU Usage</h2>
             <p class="muted section-note">By default, only the current user is shown. lifu and panzhou can view all users. Expand to see per-host details.</p>
           </div>
-          <div>
+          <div class="range-controls">
             <label>
               Time range
               <select id="user-window-select">
-                {% for window in history_windows %}
-                <option value="{{ window }}" {% if window == 30 %}selected{% endif %}>{{ window }} day{% if window != 1 %}s{% endif %}</option>
+                {% for window in user_history_windows %}
+                <option value="{{ window.days }}" {% if window.days == 30 %}selected{% endif %}>{{ window.label }}</option>
                 {% endfor %}
+                <option value="custom">Custom range</option>
               </select>
             </label>
+            <div id="user-custom-range" class="custom-range" hidden>
+              <label>
+                From
+                <input type="date" id="user-start-date" />
+              </label>
+              <label>
+                To
+                <input type="date" id="user-end-date" />
+              </label>
+              <button type="button" id="user-custom-apply" class="secondary">Apply</button>
+            </div>
           </div>
         </div>
+        <p id="user-range-note" class="muted section-note" hidden></p>
         <div id="user-table-wrapper" class="empty-state">User aggregates you are allowed to view will appear after login.</div>
       </section>
 

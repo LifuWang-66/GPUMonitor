@@ -4,8 +4,8 @@
 
 - 状态层：展示每台服务器每张 GPU 的当前利用率、显存、活跃用户、占用状态。
 - 历史统计层：支持 7 / 14 / 20 / 30 天窗口，展示 GPU 占用率、有效利用率、平均 GPU utilization 与平均显存。
-- 用户统计层：按用户聚合 GPU 使用时长、非空闲时长与平均利用率。
-- 采样策略：默认每 10 分钟通过 SSH 执行 `nvidia-smi`，只保留每日聚合结果，自动清理 60 天前数据。
+- 用户统计层：按用户聚合 GPU 使用时长、非空闲时长与平均利用率，支持 1 / 3 / 7 / 14 / 30 天与 3 / 6 / 12 个月窗口，以及自定义起止日期。
+- 采样策略：默认每 10 分钟通过 SSH 执行 `nvidia-smi`，只保留每日聚合结果。GPU 日聚合默认保留 60 天；用户日聚合默认保留 400 天，以支撑 3 / 6 / 12 个月与自定义窗口。
 
 ## 业务规则
 
@@ -21,6 +21,8 @@
 
 - 状态层和历史统计层都会按服务器分组展示，同一台机器的 GPU 会放在同一个分组卡片中。
 - 用户统计层按用户聚合：如果同一个用户同时使用 `165` 和 `181`，页面只显示一行该用户，并列出涉及的服务器。
+- 用户统计层的时间范围下拉框除了 1 / 3 / 7 / 14 / 30 天，还提供 `3 months`（90 天）、`6 months`（180 天）、`12 months`（365 天）以及 `Custom range`。选择 `Custom range` 后会出现起止日期输入框，点击 `Apply` 才会发起查询。
+- 面板上方会显示本次查询实际覆盖的区间，例如 `Range: 2026-01-01 → 2026-03-31 (90 days)`；用户卡片同时给出 `Active days`（该区间内有采集记录的天数）。
 - 手动点击“刷新当前状态”只会临时拉取最新 GPU 状态，不会把这次刷新写入日聚合，也不会增加用户 GPU 使用时长。
 - 真正会写数据库并累加历史使用时长的只有定时采集任务和 `/api/collector/run`。
 
@@ -46,7 +48,7 @@
 
 - `current_gpu_statuses`：当前状态快照。
 - `daily_gpu_aggregates`：按天聚合的 GPU 统计。
-- `daily_user_aggregates`：按天聚合的用户统计。
+- `daily_user_aggregates`：按天聚合的用户统计（保留期由 `USER_AGGREGATE_RETENTION_DAYS` 控制，默认 400 天）。
 - 默认数据库：SQLite，文件位置通常是 `./data/gpu_monitor.db`。
 
 ## 用 Conda 安装并运行
@@ -70,6 +72,8 @@ SECRET_KEY=replace-with-a-random-string
 DATABASE_URL=sqlite:///./data/gpu_monitor.db
 COLLECTOR_INTERVAL_MINUTES=10
 RETENTION_DAYS=60
+USER_AGGREGATE_RETENTION_DAYS=400
+MAX_CUSTOM_HISTORY_DAYS=1096
 COLLECTOR_SSH_USERNAME=<部署机上用于采集的统一账号>
 COLLECTOR_SSH_PASSWORD=<对应密码，或者留空改用 SSH key>
 # 如果你要用密钥，就填写：
@@ -136,7 +140,23 @@ curl -X POST http://127.0.0.1:8000/api/collector/run
 {"messages":["Collected 10.193.104.165","Collected 10.193.104.170"]}
 ```
 
-### 3. 查看当前状态 API
+### 3. 查询用户 GPU 使用（含多月与自定义区间）
+
+预设窗口用 `days`，可选值为 `1 / 3 / 7 / 14 / 30 / 90 / 180 / 365`：
+
+```bash
+curl "http://127.0.0.1:8000/api/history/users?days=365"
+```
+
+自定义区间用 `start_date` 与 `end_date`（`YYYY-MM-DD`，含首尾两天，必须成对出现）：
+
+```bash
+curl "http://127.0.0.1:8000/api/history/users?start_date=2026-01-01&end_date=2026-03-31"
+```
+
+约束：`start_date` 不能晚于 `end_date`，也不能是将来的日期；`end_date` 超过今天会自动截断到今天；区间长度不能超过 `MAX_CUSTOM_HISTORY_DAYS`（默认 1096 天）。不满足时返回 400。
+
+### 4. 查看当前状态 API
 
 ```bash
 curl http://127.0.0.1:8000/api/status/current

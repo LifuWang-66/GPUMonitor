@@ -9,6 +9,11 @@ const killJobsWrapper = document.getElementById('kill-jobs-wrapper');
 const jobsRefreshButton = document.getElementById('jobs-refresh-button');
 const windowSelect = document.getElementById('window-select');
 const userWindowSelect = document.getElementById('user-window-select');
+const userCustomRange = document.getElementById('user-custom-range');
+const userStartDate = document.getElementById('user-start-date');
+const userEndDate = document.getElementById('user-end-date');
+const userCustomApply = document.getElementById('user-custom-apply');
+const userRangeNote = document.getElementById('user-range-note');
 const refreshButton = document.getElementById('refresh-button');
 const logoutButton = document.getElementById('logout-button');
 const ADMIN_USERS = new Set(['lifu', 'panzhou']);
@@ -250,8 +255,57 @@ function renderGpuHistory(items) {
   }
 }
 
+function toDateInputValue(dateValue) {
+  const offsetMs = dateValue.getTimezoneOffset() * 60000;
+  return new Date(dateValue.getTime() - offsetMs).toISOString().slice(0, 10);
+}
+
+function isCustomUserRange() {
+  return userWindowSelect?.value === 'custom';
+}
+
+function prefillCustomRange() {
+  if (!userStartDate || !userEndDate) return;
+  const today = new Date();
+  if (!userEndDate.value) {
+    userEndDate.value = toDateInputValue(today);
+  }
+  if (!userStartDate.value) {
+    const start = new Date(today);
+    start.setDate(start.getDate() - 29);
+    userStartDate.value = toDateInputValue(start);
+  }
+  userStartDate.max = toDateInputValue(today);
+  userEndDate.max = toDateInputValue(today);
+}
+
+function buildUserHistoryQuery() {
+  if (isCustomUserRange()) {
+    const start = userStartDate?.value;
+    const end = userEndDate?.value;
+    if (start && end) {
+      return `start_date=${start}&end_date=${end}`;
+    }
+  }
+  const days = Number(userWindowSelect?.value || windowSelect?.value || 30) || 30;
+  return `days=${days}`;
+}
+
+function renderUserRangeNote(items) {
+  if (!userRangeNote) return;
+  const first = items[0];
+  if (!first?.period_start || !first?.period_end) {
+    userRangeNote.hidden = true;
+    userRangeNote.textContent = '';
+    return;
+  }
+  userRangeNote.hidden = false;
+  userRangeNote.textContent = `Range: ${first.period_start} → ${first.period_end} (${first.period_days} days)`;
+}
+
 function renderUsers(items) {
   userTableWrapper.innerHTML = '';
+  renderUserRangeNote(items);
   if (!items.length) {
     userTableWrapper.textContent = 'No user aggregates yet.';
     userTableWrapper.classList.add('empty-state');
@@ -278,6 +332,7 @@ function renderUsers(items) {
         <div class="user-summary-list">
           <span class="server-summary-badge">Total: ${item.gpu_hours} h</span>
           <span class="server-summary-badge">Daily avg: ${item.daily_average_gpu_hours} h</span>
+          <span class="server-summary-badge">Active days: ${item.active_days ?? '--'}</span>
           <span class="server-summary-badge">Non-idle: ${item.non_idle_hours} h</span>
           <span class="server-summary-badge">Avg util: ${item.average_gpu_utilization}%</span>
           <span class="server-summary-badge">Avg mem: ${mbToGb(item.average_memory_used_mb || 0)} GB</span>
@@ -492,11 +547,10 @@ async function refreshAll() {
     return;
   }
   const windowDays = Number(windowSelect.value);
-  const userWindowDays = Number(userWindowSelect?.value || windowSelect.value);
   const [current, gpuHistory, users, storage, killJobs] = await Promise.all([
     fetchJson('/api/status/current'),
     fetchJson(`/api/history/gpus?days=${windowDays}`),
-    fetchJson(`/api/history/users?days=${userWindowDays}`),
+    fetchJson(`/api/history/users?${buildUserHistoryQuery()}`),
     fetchJson('/api/storage/users'),
     fetchJson('/api/jobs/to-be-killed'),
   ]);
@@ -511,8 +565,7 @@ async function refreshUsers() {
   if (!bootstrap.accessibleHosts.length) {
     return;
   }
-  const userWindowDays = Number(userWindowSelect?.value || windowSelect?.value || 30);
-  const users = await fetchJson(`/api/history/users?days=${userWindowDays}`);
+  const users = await fetchJson(`/api/history/users?${buildUserHistoryQuery()}`);
   renderUsers(users);
 }
 
@@ -536,6 +589,26 @@ windowSelect?.addEventListener('change', () => {
 });
 
 userWindowSelect?.addEventListener('change', () => {
+  if (isCustomUserRange()) {
+    prefillCustomRange();
+    if (userCustomRange) userCustomRange.hidden = false;
+    return;
+  }
+  if (userCustomRange) userCustomRange.hidden = true;
+  refreshUsers().catch(error => alert(`Failed to load user summary: ${error.message}`));
+});
+
+userCustomApply?.addEventListener('click', () => {
+  const start = userStartDate?.value;
+  const end = userEndDate?.value;
+  if (!start || !end) {
+    alert('Please pick both a start and an end date.');
+    return;
+  }
+  if (start > end) {
+    alert('The start date must not be later than the end date.');
+    return;
+  }
   refreshUsers().catch(error => alert(`Failed to load user summary: ${error.message}`));
 });
 
