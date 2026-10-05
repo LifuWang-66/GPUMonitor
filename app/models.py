@@ -88,6 +88,17 @@ class UserStorageUsage(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 
+class HostStorageScan(Base):
+    __tablename__ = 'host_storage_scans'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    host_id: Mapped[int] = mapped_column(ForeignKey('hosts.id'), nullable=False, unique=True, index=True)
+    last_started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    last_finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_status: Mapped[str] = mapped_column(String(20), default='running', nullable=False)
+    last_message: Mapped[str] = mapped_column(String(1000), default='', nullable=False)
+
+
 class UserUtilizationSample(Base):
     __tablename__ = 'user_utilization_samples'
 

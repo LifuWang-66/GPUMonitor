@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     collector_ssh_key_path: str | None = None
     collector_ssh_port: int = 22
     ssh_connect_timeout_seconds: int = 8
+    ssh_command_timeout_seconds: int = 120
+    # Per-user /home usage scan (`du`): runs once a day at home_scan_hour:home_scan_minute.
+    home_scan_hour: int = 5
+    home_scan_minute: int = 0
+    home_scan_timezone: str = 'Asia/Singapore'
+    home_scan_du_timeout_seconds: int = 1800
+    home_scan_total_timeout_seconds: int = 6 * 3600
+    home_scan_manual_cooldown_hours: int = 6
     smtp_host: str | None = None
     smtp_port: int = 587
     smtp_username: str | None = None

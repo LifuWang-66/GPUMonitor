@@ -621,6 +621,8 @@ storageRefreshButton?.addEventListener('click', async () => {
     renderStorage(response.storage || []);
     if (response.errors?.length) {
       alert(`Storage refresh reported errors:\n${response.errors.join('\n')}`);
+    } else if (response.message) {
+      alert(response.message);
     }
   } catch (error) {
     alert(`Storage refresh failed: ${error.message}`);

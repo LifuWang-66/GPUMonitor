@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -36,56 +37,92 @@ HOME_USERS_QUERY = 'ls /home'
 STORAGE_QUERY = "df -B1 /home | awk 'NR==2 {print $3}'"
 
 
-def _build_home_user_usage_query(excluded_users: set[str], sudo_password: str) -> str:
+HOME_USAGE_LOCK_PATH = '/tmp/gpumonitor-home-usage.lock'
+
+
+def _build_home_user_usage_query(excluded_users: set[str], sudo_password: str, du_timeout_seconds: int) -> str:
+    """Remote script that runs one `du` at a time over /home/<user>.
+
+    Each `du` is wrapped in `timeout -s KILL` *inside* sudo so the kill comes from
+    root and cannot orphan the `du` (killing `sudo` itself with SIGKILL would).
+    A normal timeout only skips that directory. If `du` still has not exited well
+    after the KILL, it is stuck in D state on disk I/O, so the scan stops instead
+    of piling more `du` processes onto the same disk. A file lock plus a check
+    for leftover `du` processes keeps scans from overlapping across runs.
+
+    Output lines: OK<TAB>bytes<TAB>user, TIMEOUT<TAB>user, ERROR<TAB>user<TAB>rc,
+    STUCK<TAB>user, BUSY<TAB>reason.
+    """
     excluded_list = sorted(excluded_users)
     return (
         "python3 - <<'PY'\n"
+        "import fcntl\n"
         "import os\n"
         "import subprocess\n"
+        "import sys\n"
         "\n"
         f"excluded = set({excluded_list!r})\n"
         f"sudo_password = {sudo_password!r}\n"
+        f"du_timeout = {int(du_timeout_seconds)}\n"
+        "\n"
+        f"lock = open({HOME_USAGE_LOCK_PATH!r}, 'a')\n"
+        "try:\n"
+        "    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "except OSError:\n"
+        "    print('BUSY\\tprevious scan is still running')\n"
+        "    sys.exit(0)\n"
+        "\n"
+        "leftover = subprocess.run(['pgrep', '-f', '^du -sb /home/'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)\n"
+        "leftover_pids = leftover.stdout.decode().split()\n"
+        "if leftover_pids:\n"
+        "    print('BUSY\\tleftover du processes still running: ' + ','.join(leftover_pids))\n"
+        "    sys.exit(0)\n"
+        "\n"
+        "use_sudo = False\n"
+        "if sudo_password:\n"
+        "    try:\n"
+        "        use_sudo = subprocess.run(\n"
+        "            ['sudo', '-S', '-p', '', 'true'],\n"
+        "            input=(sudo_password + '\\n').encode(),\n"
+        "            stdout=subprocess.DEVNULL,\n"
+        "            stderr=subprocess.DEVNULL,\n"
+        "            timeout=30,\n"
+        "        ).returncode == 0\n"
+        "    except Exception:\n"
+        "        use_sudo = False\n"
+        "\n"
         "entries = []\n"
         "for name in os.listdir('/home'):\n"
         "    if name in excluded:\n"
         "        continue\n"
         "    path = os.path.join('/home', name)\n"
-        "    if not os.path.isdir(path):\n"
+        "    if not os.path.isdir(path) or os.path.islink(path):\n"
         "        continue\n"
         "    entries.append((name, path))\n"
         "\n"
-        "for _, path in sorted(entries):\n"
+        "for name, path in sorted(entries):\n"
+        "    cmd = ['timeout', '-s', 'KILL', str(du_timeout), 'nice', '-n', '19', 'ionice', '-c', '2', '-n', '7', 'du', '-sb', path]\n"
+        "    if use_sudo:\n"
+        "        cmd = ['sudo', '-S', '-p', ''] + cmd\n"
         "    try:\n"
         "        proc = subprocess.run(\n"
-        "            ['sudo', '-S', 'du', '-sb', path],\n"
-        "            input=(sudo_password + '\\n').encode(),\n"
+        "            cmd,\n"
+        "            input=(sudo_password + '\\n').encode() if use_sudo else None,\n"
         "            stdout=subprocess.PIPE,\n"
         "            stderr=subprocess.DEVNULL,\n"
         "            check=False,\n"
-        "            timeout=60,\n"
+        "            timeout=du_timeout + 120,\n"
         "        )\n"
-        "        if proc.returncode == 0 and proc.stdout:\n"
-        "            print(proc.stdout.decode().rstrip())\n"
-        "            continue\n"
         "    except subprocess.TimeoutExpired:\n"
-        "        continue\n"
-        "    except Exception:\n"
-        "        pass\n"
-        "\n"
-        "    try:\n"
-        "        proc = subprocess.run(\n"
-        "            ['du', '-sb', path],\n"
-        "            stdout=subprocess.PIPE,\n"
-        "            stderr=subprocess.DEVNULL,\n"
-        "            check=False,\n"
-        "            timeout=60,\n"
-        "        )\n"
-        "        if proc.returncode == 0 and proc.stdout:\n"
-        "            print(proc.stdout.decode().rstrip())\n"
-        "    except subprocess.TimeoutExpired:\n"
-        "        continue\n"
-        "    except Exception:\n"
-        "        continue\n"
+        "        print(f'STUCK\\t{name}', flush=True)\n"
+        "        break\n"
+        "    parts = proc.stdout.decode().split(None, 1)\n"
+        "    if proc.returncode == 0 and parts and parts[0].isdigit():\n"
+        "        print(f'OK\\t{parts[0]}\\t{name}', flush=True)\n"
+        "    elif proc.returncode in (124, 137, -9):\n"
+        "        print(f'TIMEOUT\\t{name}', flush=True)\n"
+        "    else:\n"
+        "        print(f'ERROR\\t{name}\\t{proc.returncode}', flush=True)\n"
         "PY"
     )
 
@@ -120,7 +157,16 @@ class HostSnapshot:
     collected_at: datetime
     gpu_records: list[GpuRecord]
     storage_used_bytes: int = 0
-    home_user_used_bytes: dict[str, int] | None = None
+
+
+@dataclass
+class HomeUsageScanResult:
+    used_bytes: dict[str, int]
+    timed_out_users: list[str]
+    failed_users: list[str]
+    stuck_user: str | None = None
+    busy_reason: str | None = None
+    ssh_timed_out: bool = False
 
 
 class RemoteCollectorError(RuntimeError):
@@ -183,11 +229,40 @@ def close_collector_connections() -> None:
         _COLLECTOR_CLIENT_KEYS.clear()
 
 
+def _run_with_deadline(client: paramiko.SSHClient, command: str, timeout_seconds: float) -> tuple[int | None, str, str]:
+    """Run a remote command, giving up after timeout_seconds.
+
+    Returns (exit_code, stdout, stderr); exit_code is None when the deadline hit,
+    in which case stdout/stderr hold whatever arrived before it.
+    """
+    channel = client.get_transport().open_session()
+    stdout_chunks: list[bytes] = []
+    stderr_chunks: list[bytes] = []
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        channel.exec_command(command)
+        while True:
+            while channel.recv_ready():
+                stdout_chunks.append(channel.recv(65536))
+            while channel.recv_stderr_ready():
+                stderr_chunks.append(channel.recv_stderr(65536))
+            if channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
+                exit_code: int | None = channel.recv_exit_status()
+                break
+            if time.monotonic() >= deadline:
+                exit_code = None
+                break
+            time.sleep(0.05)
+    finally:
+        channel.close()
+    return exit_code, b''.join(stdout_chunks).decode(errors='replace').strip(), b''.join(stderr_chunks).decode(errors='replace').strip()
+
+
 def _execute_command_with_client(client: paramiko.SSHClient, command: str) -> str:
-    _, stdout, stderr = client.exec_command(command)
-    exit_code = stdout.channel.recv_exit_status()
-    output = stdout.read().decode().strip()
-    error = stderr.read().decode().strip()
+    timeout_seconds = settings.ssh_command_timeout_seconds
+    exit_code, output, error = _run_with_deadline(client, command, timeout_seconds)
+    if exit_code is None:
+        raise RemoteCollectorError(f'Remote command timed out after {timeout_seconds}s')
     if exit_code != 0 and error:
         raise RemoteCollectorError(error)
     return output
@@ -285,8 +360,6 @@ def collect_host_snapshot(
     host_name: str,
     host_address: str,
     credentials: SshCredentials,
-    *,
-    include_home_user_usage: bool = True,
 ) -> HostSnapshot:
     client = _get_or_create_collector_client(host_address, credentials)
     try:
@@ -294,14 +367,6 @@ def collect_host_snapshot(
         process_output = _execute_command_with_client(client, PROCESS_QUERY)
         pid_users_raw = _execute_command_with_client(client, PID_USER_QUERY)
         storage_used_raw = _execute_command_with_client(client, STORAGE_QUERY)
-        home_user_usage_raw = (
-            _execute_command_with_client(
-                client,
-                _build_home_user_usage_query(settings.excluded_users, credentials.password or ''),
-            )
-            if include_home_user_usage
-            else ''
-        )
     except Exception:  # noqa: BLE001
         with _COLLECTOR_CLIENTS_LOCK:
             stale = _COLLECTOR_CLIENTS.pop(host_address, None)
@@ -314,18 +379,6 @@ def collect_host_snapshot(
         raise
     pid_users = json.loads(pid_users_raw or '{}')
     storage_used_bytes = int(storage_used_raw or 0)
-    home_user_used_bytes: dict[str, int] | None = None
-    if include_home_user_usage:
-        home_user_used_bytes = {}
-        for row in home_user_usage_raw.splitlines():
-            parts = row.strip().split(None, 1)
-            if len(parts) != 2:
-                continue
-            size_text, path = parts
-            if not size_text.isdigit():
-                continue
-            username = path.rstrip('/').split('/')[-1]
-            home_user_used_bytes[username] = int(size_text)
 
     uuid_to_users: dict[str, list[str]] = {}
     uuid_to_count: dict[str, int] = {}
@@ -378,5 +431,45 @@ def collect_host_snapshot(
         collected_at=datetime.now(timezone.utc),
         gpu_records=gpu_records,
         storage_used_bytes=storage_used_bytes,
-        home_user_used_bytes=home_user_used_bytes,
     )
+
+
+def _parse_home_usage_output(output: str) -> HomeUsageScanResult:
+    result = HomeUsageScanResult(used_bytes={}, timed_out_users=[], failed_users=[])
+    for line in output.splitlines():
+        parts = line.strip().split('\t')
+        kind = parts[0]
+        if kind == 'OK' and len(parts) == 3 and parts[1].isdigit():
+            result.used_bytes[parts[2]] = int(parts[1])
+        elif kind == 'TIMEOUT' and len(parts) >= 2:
+            result.timed_out_users.append(parts[1])
+        elif kind == 'ERROR' and len(parts) >= 2:
+            result.failed_users.append(parts[1])
+        elif kind == 'STUCK' and len(parts) >= 2:
+            result.stuck_user = parts[1]
+        elif kind == 'BUSY':
+            result.busy_reason = parts[1] if len(parts) > 1 else 'busy'
+    return result
+
+
+def collect_home_user_usage(host_address: str, credentials: SshCredentials) -> HomeUsageScanResult:
+    """Scan per-user /home usage on a dedicated SSH connection.
+
+    Uses its own connection so a long scan never holds up (or tears down) the
+    shared connection used by the regular GPU collector.
+    """
+    command = _build_home_user_usage_query(
+        settings.excluded_users,
+        credentials.password or '',
+        settings.home_scan_du_timeout_seconds,
+    )
+    client = _connect(host_address, credentials)
+    try:
+        exit_code, output, error = _run_with_deadline(client, command, settings.home_scan_total_timeout_seconds)
+    finally:
+        client.close()
+    if exit_code not in (None, 0) and not output:
+        raise RemoteCollectorError(error or f'Home usage scan exited with code {exit_code}')
+    result = _parse_home_usage_output(output)
+    result.ssh_timed_out = exit_code is None
+    return result

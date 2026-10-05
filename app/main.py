@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -32,7 +33,7 @@ from app.schemas import (
     TestPolicyEmailResponse,
 )
 from app.services.analytics import get_current_status, get_gpu_history, get_user_history, get_user_storage, resolve_history_range
-from app.services.collector import build_notification_email, ensure_hosts, get_collector_credentials, refresh_current_status_only, refresh_user_storage, run_collection
+from app.services.collector import build_notification_email, ensure_hosts, get_collector_credentials, refresh_current_status_only, run_collection, run_home_storage_scan, start_manual_storage_refresh
 from app.services.notifications import send_email
 from app.services.ssh_client import SshCredentials, close_collector_connections, fetch_home_users, kill_specific_gpu_processes, validate_host_access
 
@@ -45,6 +46,14 @@ def _scheduled_collection() -> None:
     db = SessionLocal()
     try:
         run_collection(db)
+    finally:
+        db.close()
+
+
+def _scheduled_home_storage_scan() -> None:
+    db = SessionLocal()
+    try:
+        run_home_storage_scan(db)
     finally:
         db.close()
 
@@ -69,6 +78,15 @@ async def lifespan(_: FastAPI):
     finally:
         db.close()
     scheduler.add_job(_scheduled_collection, 'interval', minutes=settings.collector_interval_minutes, id='collector', replace_existing=True)
+    scheduler.add_job(
+        _scheduled_home_storage_scan,
+        CronTrigger(hour=settings.home_scan_hour, minute=settings.home_scan_minute, timezone=settings.home_scan_timezone),
+        id='home_storage_scan',
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=3600,
+    )
     scheduler.start()
     try:
         yield
@@ -242,10 +260,10 @@ def api_user_storage(request: Request, allowed_hosts: list[str] = Depends(get_al
 
 @app.post('/api/storage/refresh')
 def api_refresh_storage(request: Request, allowed_hosts: list[str] = Depends(get_allowed_hosts), db: Session = Depends(get_db)):
-    hosts_updated, errors = refresh_user_storage(db, allowed_hosts)
+    started, message = start_manual_storage_refresh(allowed_hosts)
     viewer = request.session.get('username', '')
     storage = get_user_storage(db, allowed_hosts, viewer_username=viewer)
-    return {'hosts_updated': hosts_updated, 'errors': errors, 'storage': storage}
+    return {'started': started, 'message': message, 'errors': [], 'storage': storage}
 
 
 def _serialize_kill_candidate(row: JobKillCandidate, host: Host, now: datetime) -> JobKillCandidateItem:
