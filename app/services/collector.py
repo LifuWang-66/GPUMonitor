@@ -1,18 +1,19 @@
 from __future__ import annotations
 
 import threading
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models import CurrentGpuStatus, DailyGpuAggregate, DailyUserAggregate, Host, JobKillCandidate, NotificationEvent, ProcessUtilizationSample, UserProfile, UserStorageUsage, UserUtilizationSample
+from app.db import SessionLocal
+from app.models import CurrentGpuStatus, DailyGpuAggregate, DailyUserAggregate, Host, HostStorageScan, JobKillCandidate, NotificationEvent, ProcessUtilizationSample, UserProfile, UserStorageUsage, UserUtilizationSample
 from app.schemas import CurrentGpuResponse
 from app.services.analytics import snapshot_to_current_status
 from app.services.notifications import queue_email, send_email
-from app.services.ssh_client import HostSnapshot, SshCredentials, collect_host_snapshot, kill_specific_gpu_processes, kill_user_gpu_processes
+from app.services.ssh_client import HomeUsageScanResult, HostSnapshot, SshCredentials, collect_home_user_usage, collect_host_snapshot, kill_specific_gpu_processes, kill_user_gpu_processes
 
 settings = get_settings()
 HIGH_GPU_COUNT_THRESHOLD = 8
@@ -23,8 +24,9 @@ EIGHT_HOURS = timedelta(hours=8)
 KILL_GRACE_PERIOD = timedelta(hours=4)
 ESCALATION_AFTER = timedelta(days=1)
 RUN_COLLECTION_LOCK = threading.Lock()
+# Separate from RUN_COLLECTION_LOCK so a long /home scan never blocks GPU collection.
+STORAGE_SCAN_LOCK = threading.Lock()
 MIN_EIGHT_HOUR_SAMPLE_RATIO = 0.9
-_LAST_HOME_USAGE_SCAN_DATE_BY_HOST: dict[int, date] = {}
 
 
 def get_collector_credentials() -> SshCredentials | None:
@@ -72,37 +74,96 @@ def collect_live_current_status(allowed_hosts: list[str]) -> tuple[list[CurrentG
     return snapshots, errors
 
 
-def refresh_user_storage(db: Session, allowed_hosts: list[str]) -> tuple[int, list[str]]:
-    """Force-collect per-user /home usage for the given hosts and persist it.
+def run_home_storage_scan(db: Session, allowed_hosts: list[str] | None = None, *, respect_cooldown: bool = False) -> tuple[int, list[str]]:
+    """Scan per-user /home usage (`du`) and persist it.
 
-    Bypasses the once-per-day scan gate so users can trigger it manually.
-    Returns (hosts_updated, errors).
+    Runs from the daily 05:00 job, or from the manual refresh button with
+    respect_cooldown=True so repeated clicks don't trigger repeated scans.
+    Returns (hosts_updated, messages).
     """
     credentials = get_collector_credentials()
     if credentials is None:
-        return 0, ['Collector skipped: missing COLLECTOR_SSH_USERNAME configuration.']
+        return 0, ['Storage scan skipped: missing COLLECTOR_SSH_USERNAME configuration.']
 
-    if not RUN_COLLECTION_LOCK.acquire(blocking=False):
-        return 0, ['Storage refresh skipped: another collection run is already in progress.']
+    if not STORAGE_SCAN_LOCK.acquire(blocking=False):
+        return 0, ['Storage scan skipped: another storage scan is already in progress.']
 
     try:
-        host_rows = db.scalars(select(Host).where(Host.address.in_(allowed_hosts))).all()
+        stmt = select(Host).where(Host.enabled.is_(True))
+        if allowed_hosts is not None:
+            stmt = stmt.where(Host.address.in_(allowed_hosts))
+        host_rows = db.scalars(stmt).all()
         updated = 0
-        errors: list[str] = []
-        today = datetime.now(timezone.utc).date()
+        messages: list[str] = []
+        cooldown = timedelta(hours=settings.home_scan_manual_cooldown_hours)
         for host in host_rows:
+            scan_state = db.scalar(select(HostStorageScan).where(HostStorageScan.host_id == host.id))
+            now = datetime.utcnow()
+            if respect_cooldown and scan_state is not None and now - scan_state.last_started_at < cooldown:
+                messages.append(f'Skipped {host.address}: last scan started at {scan_state.last_started_at:%Y-%m-%d %H:%M} UTC.')
+                continue
+            if scan_state is None:
+                scan_state = HostStorageScan(host_id=host.id)
+                db.add(scan_state)
+            scan_state.last_started_at = now
+            scan_state.last_finished_at = None
+            scan_state.last_status = 'running'
+            scan_state.last_message = ''
+            db.commit()
+
             try:
-                snapshot = collect_host_snapshot(host.name, host.address, credentials, include_home_user_usage=True)
-                _persist_user_storage_usage(db, host, snapshot)
-                db.commit()
-                _LAST_HOME_USAGE_SCAN_DATE_BY_HOST[host.id] = today
-                updated += 1
+                result = collect_home_user_usage(host.address, credentials)
+                _persist_user_storage_usage(db, host, result.used_bytes, datetime.utcnow())
+                status, message = _describe_home_usage_scan(result)
+                if result.used_bytes:
+                    updated += 1
             except Exception as exc:  # noqa: BLE001
                 db.rollback()
-                errors.append(f'Failed {host.address}: {exc}')
-        return updated, errors
+                status, message = 'failed', str(exc)
+            scan_state.last_finished_at = datetime.utcnow()
+            scan_state.last_status = status
+            scan_state.last_message = message[:1000]
+            db.commit()
+            messages.append(f'{host.address}: {message}')
+            print(f'[storage-scan] host={host.address} status={status} {message}')
+        return updated, messages
     finally:
-        RUN_COLLECTION_LOCK.release()
+        STORAGE_SCAN_LOCK.release()
+
+
+def _describe_home_usage_scan(result: HomeUsageScanResult) -> tuple[str, str]:
+    if result.busy_reason:
+        return 'skipped', f'skipped, {result.busy_reason}'
+    parts = [f'{len(result.used_bytes)} directories scanned']
+    if result.timed_out_users:
+        parts.append(f'timed out (kept previous value): {", ".join(result.timed_out_users)}')
+    if result.failed_users:
+        parts.append(f'failed: {", ".join(result.failed_users)}')
+    if result.stuck_user:
+        parts.append(f'du on /home/{result.stuck_user} did not exit after SIGKILL (likely D state), scan stopped')
+    if result.ssh_timed_out:
+        parts.append('scan exceeded the total time limit')
+    status = 'ok' if len(parts) == 1 else 'partial'
+    return status, '; '.join(parts)
+
+
+def start_manual_storage_refresh(allowed_hosts: list[str]) -> tuple[bool, str]:
+    """Kick off a /home scan in the background for the manual refresh button."""
+    if STORAGE_SCAN_LOCK.locked():
+        return False, 'A storage scan is already running; results will appear when it finishes.'
+
+    def _worker() -> None:
+        db = SessionLocal()
+        try:
+            run_home_storage_scan(db, allowed_hosts, respect_cooldown=True)
+        finally:
+            db.close()
+
+    threading.Thread(target=_worker, name='manual-storage-scan', daemon=True).start()
+    return True, (
+        'Storage scan started in the background; reload in a while to see updated values. '
+        f'Hosts scanned within the last {settings.home_scan_manual_cooldown_hours} hours are skipped.'
+    )
 
 
 def refresh_current_status_only(db: Session, allowed_hosts: list[str]) -> tuple[list[CurrentGpuResponse], list[str]]:
@@ -118,7 +179,7 @@ def refresh_current_status_only(db: Session, allowed_hosts: list[str]) -> tuple[
         if not host:
             continue
         try:
-            snapshot = collect_host_snapshot(host.name, host.address, credentials, include_home_user_usage=False)
+            snapshot = collect_host_snapshot(host.name, host.address, credentials)
             print(f'[refresh] host={host.name} address={host.address} collected_at={snapshot.collected_at.isoformat()} gpus={len(snapshot.gpu_records)}')
             for record in snapshot.gpu_records:
                 print(
@@ -174,12 +235,7 @@ def run_collection(db: Session) -> list[str]:
         hosts = ensure_hosts(db)
         for host in hosts:
             try:
-                snapshot = collect_host_snapshot(
-                    host.name,
-                    host.address,
-                    credentials,
-                    include_home_user_usage=_should_collect_home_user_usage_today(host.id),
-                )
+                snapshot = collect_host_snapshot(host.name, host.address, credentials)
                 upsert_snapshot(db, host, snapshot)
                 _evaluate_and_handle_user_alerts(db, host, snapshot, credentials)
                 _refresh_kill_candidates_and_enforce(db, host, snapshot, credentials)
@@ -197,15 +253,6 @@ def run_collection(db: Session) -> list[str]:
         return messages
     finally:
         RUN_COLLECTION_LOCK.release()
-
-
-def _should_collect_home_user_usage_today(host_id: int) -> bool:
-    today = datetime.now(timezone.utc).date()
-    last_scanned = _LAST_HOME_USAGE_SCAN_DATE_BY_HOST.get(host_id)
-    if last_scanned == today:
-        return False
-    _LAST_HOME_USAGE_SCAN_DATE_BY_HOST[host_id] = today
-    return True
 
 
 def upsert_snapshot(db: Session, host: Host, snapshot: HostSnapshot) -> None:
@@ -263,7 +310,6 @@ def upsert_snapshot(db: Session, host: Host, snapshot: HostSnapshot) -> None:
 
     _persist_user_utilization_samples(db, host, snapshot)
     _persist_process_utilization_samples(db, host, snapshot)
-    _persist_user_storage_usage(db, host, snapshot)
 
 
 def _upsert_current_status_snapshot(db: Session, host: Host, snapshot: HostSnapshot) -> None:
@@ -310,11 +356,8 @@ def _persist_user_utilization_samples(db: Session, host: Host, snapshot: HostSna
         )
 
 
-def _persist_user_storage_usage(db: Session, host: Host, snapshot: HostSnapshot) -> None:
-    if snapshot.home_user_used_bytes is None:
-        return
-    updated_at = snapshot.collected_at.replace(tzinfo=None)
-    for username, used_bytes in snapshot.home_user_used_bytes.items():
+def _persist_user_storage_usage(db: Session, host: Host, used_bytes_by_user: dict[str, int], updated_at: datetime) -> None:
+    for username, used_bytes in used_bytes_by_user.items():
         if username in settings.excluded_users:
             continue
         storage_insert = sqlite_insert(UserStorageUsage).values(
@@ -440,25 +483,33 @@ def _evaluate_and_handle_user_alerts(db: Session, host: Host, snapshot: HostSnap
     exempt_users = settings.low_util_exempt_users
     active_issues: set[tuple[str, str]] = set()
 
-    if snapshot.home_user_used_bytes is not None:
-        for username, used_bytes in snapshot.home_user_used_bytes.items():
-            if used_bytes <= STORAGE_THRESHOLD_BYTES:
-                continue
-            profile = db.scalar(select(UserProfile).where(UserProfile.username == username))
-            if not profile or not profile.email:
-                continue
-            used_tb = used_bytes / 1024 / 1024 / 1024 / 1024
-            _notify_issue_with_escalation(
-                db,
-                host,
-                username,
-                profile.email,
-                event_type='home_user_storage_over_1_5tb',
-                reason=f'/home/{username} usage is {used_tb:.2f} TB, which exceeds the 1.5 TB threshold.',
-                cc_email=cc_email,
-                lifu_email=cc_email,
-            )
-            active_issues.add((username, 'home_user_storage_over_1_5tb'))
+    # Storage alerts read the last persisted scan, so they stay active between
+    # daily scans and for users whose `du` timed out (their previous value is kept).
+    storage_rows = db.scalars(
+        select(UserStorageUsage).where(
+            UserStorageUsage.host_id == host.id,
+            UserStorageUsage.used_bytes > STORAGE_THRESHOLD_BYTES,
+        )
+    ).all()
+    for usage in storage_rows:
+        username, used_bytes = usage.username, usage.used_bytes
+        if username in settings.excluded_users:
+            continue
+        profile = db.scalar(select(UserProfile).where(UserProfile.username == username))
+        if not profile or not profile.email:
+            continue
+        used_tb = used_bytes / 1024 / 1024 / 1024 / 1024
+        _notify_issue_with_escalation(
+            db,
+            host,
+            username,
+            profile.email,
+            event_type='home_user_storage_over_1_5tb',
+            reason=f'/home/{username} usage is {used_tb:.2f} TB, which exceeds the 1.5 TB threshold.',
+            cc_email=cc_email,
+            lifu_email=cc_email,
+        )
+        active_issues.add((username, 'home_user_storage_over_1_5tb'))
 
     per_user_gpu_count: dict[str, int] = {}
     per_user_pids: dict[str, set[int]] = {}

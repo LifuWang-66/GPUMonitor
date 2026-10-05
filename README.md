@@ -80,6 +80,20 @@ COLLECTOR_SSH_PASSWORD=<对应密码，或者留空改用 SSH key>
 # COLLECTOR_SSH_KEY_PATH=/absolute/path/to/id_ed25519
 ```
 
+`/home/<user>` 用量扫描（`du`）每天只在固定时间跑一次，相关可选配置（括号内为默认值）：
+
+```bash
+HOME_SCAN_HOUR=5                         # 每天几点扫描（5）
+HOME_SCAN_MINUTE=0                       # （0）
+HOME_SCAN_TIMEZONE=Asia/Singapore        # 上面时间所用的时区（Asia/Singapore）
+HOME_SCAN_DU_TIMEOUT_SECONDS=1800        # 单个目录的 du 超时，超时只跳过该目录并保留旧值（1800）
+HOME_SCAN_TOTAL_TIMEOUT_SECONDS=21600    # 单台机器整轮扫描的上限（21600）
+HOME_SCAN_MANUAL_COOLDOWN_HOURS=6        # 手动 Refresh storage 的冷却时间（6）
+SSH_COMMAND_TIMEOUT_SECONDS=120          # 常规采集命令（nvidia-smi 等）的超时（120）
+```
+
+扫描在目标机上串行执行，每个 `du` 都由 root 侧的 `timeout -s KILL` 控制；如果 KILL 之后 `du` 仍不退出（D 状态），本轮扫描立即停止；上一轮扫描或残留的 `du -sb /home/...` 进程还在时，本轮直接跳过，不会叠加。
+
 如果你准备使用密码采集，那么 `COLLECTOR_SSH_KEY_PATH` 保持空白即可；不要写成字面量 `None`。当前版本会把空字符串以及 `None` / `null` 这类文本自动当成未配置处理，不会再把空路径传给 SSH 客户端。
 
 启动应用：
